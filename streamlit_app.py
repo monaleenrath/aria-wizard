@@ -1969,6 +1969,25 @@ def main():
     if "step" not in st.session_state:
         st.session_state.step = 1
 
+    # ── Bootstrap API keys from Streamlit Cloud secrets into session state ──────
+    # On a fresh visit (or after refresh) session state is empty but secrets are
+    # already stored. Without this, _all_present is False and Section 2 re-appears
+    # even though every key was configured during the initial launch.
+    try:
+        _sec = st.secrets
+        _sec_map = {
+            "gemini_key":    _sec.get("GEMINI_API_KEY"),
+            "slack_token":   _sec.get("SLACK_BOT_TOKEN"),
+            "slack_channel": _sec.get("SLACK_CHANNEL_ID"),
+            "teams_webhook": _sec.get("TEAMS_WEBHOOK_URL"),
+        }
+        for _k, _v in _sec_map.items():
+            if _v and not st.session_state.get(_k):
+                st.session_state[_k] = _v
+    except Exception:
+        pass
+    # ─────────────────────────────────────────────────────────────────────────────
+
     render_progress()
 
     step = st.session_state.step
