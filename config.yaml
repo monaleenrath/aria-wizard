@@ -1,0 +1,106 @@
+# =============================================================
+# Board Room Narrator Agent - Configuration
+# =============================================================
+
+data:
+  # PRIMARY source: live Google Sheet (refreshes daily, no Mac-side file).
+  # Must be shared as "Anyone with the link → Viewer".
+  google_sheet_url: "https://docs.google.com/spreadsheets/d/1eEfyVh4VmFlmV6ZzqJkJ_ZTaogoKrE8O7_1pebFHW34/edit?gid=0"
+
+  # FALLBACK source: local Excel file. Used only if Google Sheets is unreachable.
+  excel_path: "data/Superstore.xls"
+  sheet_name: "Orders"
+
+  # Date column in the data
+  date_column: "Order Date"
+
+  # Timezone the agent considers "today" in.
+  # 9 AM EDT → America/Toronto, so reference_date = (now Toronto).date() - 1 day.
+  timezone: "America/Toronto"
+
+  # The Google Sheet refreshes daily and has yesterday's data reliably,
+  # so this fallback is off by default. The agent will raise a loud error
+  # if yesterday isn't in the data, which is the right signal that the
+  # Sheet refresh job failed.
+  fallback_to_max_date_if_missing: false
+
+metrics:
+  # Primary KPIs to track
+  kpis:
+    - name: "Sales"
+      column: "Sales"
+      agg: "sum"
+      format: "currency"
+    - name: "Profit"
+      column: "Profit"
+      agg: "sum"
+      format: "currency"
+    - name: "Orders"
+      column: "Order ID"
+      agg: "nunique"
+      format: "integer"
+    - name: "Quantity"
+      column: "Quantity"
+      agg: "sum"
+      format: "integer"
+
+  # Derived metrics computed downstream
+  derived:
+    - "AOV"          # Sales / Orders
+    - "Margin%"      # Profit / Sales
+
+  # Z-score threshold for anomaly detection
+  anomaly_zscore_threshold: 2.0
+  anomaly_lookback_days: 90
+
+drivers:
+  # Dimensions to decompose KPI deltas across
+  dimensions:
+    - "Category"
+    - "Sub-Category"
+    - "Region"
+    - "Segment"
+    - "Ship Mode"
+  top_n: 3
+
+llm:
+  # ── Choose your AI tier ──────────────────────────────────────────────────
+  # Tier 1 — stub   : No API key. Works instantly, zero setup.
+  #                   Data-accurate narratives via built-in engine.
+  #
+  # Tier 2 — gemini : FREE, 1,500 req/day. Works in India. No credit card.
+  #                   Uses gemini-2.5-flash — best narrative quality free.
+  #                   Get key (free) → https://aistudio.google.com/app/apikey
+  #                   Set GEMINI_API_KEY in .env / GitHub Secrets.
+  # ─────────────────────────────────────────────────────────────────────────
+  provider: "gemini"        # stub | gemini
+  model: "gemini-2.5-flash" # current free-tier model (replaces deprecated 2.0-flash-lite)
+  temperature: 0.4
+  max_output_tokens: 8192   # full narrative JSON needs ~2-3k tokens; 1500 truncated it
+
+  # Narrative tone & length
+  tone: "executive, confident, concise"
+  audience: "C-suite and board members"
+
+delivery:
+  # Comment out a channel name to disable it.
+  # Add "teams" back once IT provisions a corporate webhook URL.
+  channels:
+    - "slack"
+    - "file"
+    # - "teams"
+
+  slack:
+    # Set SLACK_WEBHOOK_URL in your .env file
+    webhook_env_var: "SLACK_WEBHOOK_URL"
+
+  teams:
+    # Set TEAMS_WEBHOOK_URL in your .env file (when ready)
+    webhook_env_var: "TEAMS_WEBHOOK_URL"
+    title_prefix: "Daily Performance Briefing"
+
+  file:
+    output_dir: "output"
+    formats:
+      - "markdown"
+      - "docx"
