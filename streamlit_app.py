@@ -1009,19 +1009,22 @@ def step_upload_data():
                     st.error(f"Could not load: {e}")
 
     st.divider()
-    st.caption("No file? Use the built-in Superstore sample.")
+    st.caption("No file? Use the live Superstore sample (refreshes daily).")
     if st.button("Use Superstore sample data"):
-        sample = _ROOT / "Superstore.xls"
-        if sample.exists():
-            df = pd.read_excel(sample, sheet_name="Orders")
-            st.session_state.df          = df
-            st.session_state.data_source = "file"
-            st.session_state.data_name   = "Superstore.xls"
-            _clear_preview()
-            st.success(f"✅ Loaded {len(df):,} rows from Superstore sample")
-            st.rerun()
-        else:
-            st.warning("Superstore.xls not found in project root.")
+        _sample_url = "https://docs.google.com/spreadsheets/d/1eEfyVh4VmFlmV6ZzqJkJ_ZTaogoKrE8O7_1pebFHW34/edit?gid=0"
+        with st.spinner("Loading live Superstore data…"):
+            try:
+                _csv_url = _sample_url.split("/edit")[0] + "/export?format=csv&gid=0"
+                df = pd.read_csv(_csv_url)
+                st.session_state.df               = df
+                st.session_state.data_source      = "google_sheets"
+                st.session_state.google_sheet_url = _sample_url
+                st.session_state.data_name        = "Superstore Live (Google Sheets)"
+                _clear_preview()
+                st.success(f"✅ Loaded {len(df):,} rows from Superstore Live")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not load Superstore sample: {e}")
 
     nav_buttons(back=True, next_label="Next: Discover KPIs →",
                 next_disabled="df" not in st.session_state)
@@ -1465,7 +1468,7 @@ def _build_configs() -> tuple[str, str]:
             "sheet_name":       "Orders",
             "date_column":      st.session_state.get("date_col", "Order Date"),
             "timezone":         tz,
-            "fallback_to_max_date_if_missing": False,
+            "fallback_to_max_date_if_missing": True,
         },
         "metrics": {
             "kpis": [
