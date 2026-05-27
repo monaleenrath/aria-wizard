@@ -1695,25 +1695,6 @@ def step_export_go():
             ("teams" in channels)
         )
 
-        if needs_keys:
-            # Check which keys are already present from earlier steps
-            _has_gemini    = bool(st.session_state.get("gemini_key"))
-            _has_slack_tok = bool(st.session_state.get("slack_token"))
-            _has_slack_ch  = bool(st.session_state.get("slack_channel"))
-            _has_teams     = bool(st.session_state.get("teams_webhook"))
-
-            _all_present = (
-                (not (provider == "gemini") or _has_gemini) and
-                (not ("slack" in channels) or (_has_slack_tok and _has_slack_ch)) and
-                (not ("teams" in channels) or _has_teams)
-            )
-
-            if not _all_present:
-                # Only show this section if something is actually missing
-                st.markdown("### 2️⃣ &nbsp; Your API keys")
-                st.caption("These are stored as encrypted secrets in your GitHub repo — never in any file.")
-                _render_key_inputs(provider, channels)
-                st.divider()
 
         # ── LAUNCH button ─────────────────────────────────────────────────── #
         ready = bool(st.session_state.get("gh_pat_valid") and gh_username)
