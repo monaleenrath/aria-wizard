@@ -1,0 +1,29 @@
+# Secrets — never commit these
+google_creds.json
+.env
+*.pem
+*.key
+
+# Streamlit local state
+ui_config.yaml
+.streamlit/config.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Agent output
+output/
+logs/
+*.log
+
+# macOS
+.DS_Store
+
+# Temp
+lu*.tmp
+*.tmp
