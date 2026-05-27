@@ -862,6 +862,14 @@ jobs:
           GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
           {secrets_env.strip()}
         run: python agent/main.py
+
+      - name: Upload narrative reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aria-reports
+          path: output/
+          retention-days: 30
 """
 
 
