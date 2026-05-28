@@ -190,7 +190,6 @@ ROLE_TIMEFRAME_DEFAULTS: dict[str, str] = {
     "CTO":                "1d",
     "VP":                 "30d",
     "Director":           "30d",
-    "Associate Director": "30d",
     "Sales Head":         "7d",
     "Senior Manager":     "7d",
     "Manager":            "7d",
@@ -286,18 +285,6 @@ ROLE_GROUPS: dict[str, dict[str, dict]] = {
                 "Bridge strategy to team-level action. One clear priority for the week."
             ),
         },
-        "Associate Director": {
-            "title": "Associate Director",
-            "badge": "ASSOC DIR  ·  BRIEFING",
-            "primary_kpi": "Sales",
-            "kpis": ["Sales", "Orders", "Margin%", "AOV"],
-            "accent_color": "#FB923C",
-            "driver_focus": ["Sub-Category", "Region", "Segment"],
-            "tone": (
-                "Tactical and specific. Sub-category and segment level. "
-                "What to escalate up and what to fix now."
-            ),
-        },
         "Sales Head": {
             "title": "Sales Head",
             "badge": "SALES  ·  COMMERCIAL BRIEFING",
@@ -308,6 +295,18 @@ ROLE_GROUPS: dict[str, dict[str, dict]] = {
             "tone": (
                 "Action-oriented. What is moving, what is stalling, where to push harder today. "
                 "Name specific regions and segments. One clear move before end of day."
+            ),
+        },
+        "Operations Head": {
+            "title": "Operations Head",
+            "badge": "OPS  ·  OPERATIONS BRIEFING",
+            "primary_kpi": "Orders",
+            "kpis": ["Orders", "Quantity", "AOV", "Sales"],
+            "accent_color": "#2DD4BF",
+            "driver_focus": ["Ship Mode", "Sub-Category", "Region"],
+            "tone": (
+                "Efficiency-focused. Order volume, fulfilment throughput, shipping performance. "
+                "One fix with owner and timeline. Avoid revenue language — speak in units and orders."
             ),
         },
     },
@@ -359,18 +358,6 @@ ROLE_GROUPS: dict[str, dict[str, dict]] = {
                 "Data-driven and precise. Lead with the signal, then the root cause, then the so-what. "
                 "Call out anomalies and pattern breaks. Frame every insight as a hypothesis with supporting data. "
                 "One clear analytical recommendation with a measurable success metric."
-            ),
-        },
-        "Operations Head": {
-            "title": "Operations Head",
-            "badge": "OPS  ·  OPERATIONS BRIEFING",
-            "primary_kpi": "Orders",
-            "kpis": ["Orders", "Quantity", "AOV", "Sales"],
-            "accent_color": "#2DD4BF",
-            "driver_focus": ["Ship Mode", "Sub-Category", "Region"],
-            "tone": (
-                "Efficiency-focused. Order volume, fulfilment throughput, shipping performance. "
-                "One fix with owner and timeline. Avoid revenue language — speak in units and orders."
             ),
         },
     },
@@ -946,6 +933,31 @@ def render_account_sidebar():
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()
+
+        st.divider()
+
+        # ── Help section (collapsible) ────────────────────────────────────── #
+        with st.expander("⚡ ARIA Help", expanded=False):
+            faq_options = [c["q"] for c in HELP_CONTENT.values()]
+            chosen = st.selectbox(
+                "Frequently asked questions",
+                ["— Select a question —"] + faq_options,
+                key="help_faq_sel_sb",
+                label_visibility="collapsed",
+            )
+            if chosen != "— Select a question —":
+                key = next(k for k, v in HELP_CONTENT.items() if v["q"] == chosen)
+                st.markdown(f"**{HELP_CONTENT[key]['q']}**")
+                st.markdown(HELP_CONTENT[key]["a"])
+            st.divider()
+            st.markdown(
+                "**Quick links**\n"
+                "- [Slack API apps](https://api.slack.com/apps)\n"
+                "- [Gemini free key](https://aistudio.google.com/app/apikey)\n"
+                "- [GitHub sign up](https://github.com/signup)\n"
+                "- [GitHub Actions docs](https://docs.github.com/en/actions)\n"
+                "- [Teams webhooks](https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook)"
+            )
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2248,7 +2260,7 @@ def step_upload_data():
     st.caption("Excel (.xlsx / .xls) or CSV. Needs a date column and at least one numeric column.")
 
     # ── Data guidance callout ─────────────────────────────────────────────── #
-    with st.expander("📋 What to upload — and what to keep private", expanded=True):
+    with st.expander("📋 What to upload — and what to keep private", expanded=False):
         col_why, col_do, col_dont = st.columns(3)
         col_why.markdown(
             "**🤔 Why upload data?**\n\n"
@@ -2578,10 +2590,13 @@ def step_choose_ai():
 
     if st.session_state.ai_provider == "gemini":
         ki1, ki2 = st.columns([6, 1])
-        ki1.info(
-            "Get your free Gemini key at "
-            "[aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)",
-            icon="🔑",
+        ki1.markdown(
+            '<div style="border:1px solid #374151;border-radius:6px;padding:7px 12px;'
+            'font-size:13px;line-height:1.4;display:flex;align-items:center;gap:6px">'
+            '🔑&nbsp; Get your free Gemini key at '
+            '<a href="https://aistudio.google.com/app/apikey" target="_blank" '
+            'style="color:#F59E0B">aistudio.google.com/app/apikey</a></div>',
+            unsafe_allow_html=True,
         )
         with ki2:
             help_tip("gemini_key")
@@ -2589,11 +2604,15 @@ def step_choose_ai():
                             type="password", placeholder="AIza...", key="gemini_key_input")
         if kv:
             st.session_state.gemini_key = kv
-        if not st.session_state.get("gemini_key"):
+        if not st.session_state.get("gemini_key") and not kv:
             st.caption("👆 Paste your Gemini key above to continue.")
 
     _gemini_selected = st.session_state.get("ai_provider") == "gemini"
-    _gemini_key_ok   = bool(st.session_state.get("gemini_key"))
+    # Check both session state and the live widget value so Next enables immediately
+    _gemini_key_ok   = bool(
+        st.session_state.get("gemini_key") or
+        st.session_state.get("gemini_key_input")
+    )
     _next_disabled   = _gemini_selected and not _gemini_key_ok
 
     nav_buttons(back=True, next_label="Next: Preview Card →", next_disabled=_next_disabled)
@@ -3577,9 +3596,6 @@ def main():
                 st.session_state[_k] = _v
     except Exception:
         pass
-
-    # ── Help button (top-right, floating) ────────────────────────────────────
-    render_help_button()
 
     # ── Screen router ────────────────────────────────────────────────────────
     screen = st.session_state.get("aria_screen", "wizard")
