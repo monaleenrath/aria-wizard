@@ -822,7 +822,7 @@ def screen_auth():
         pass
 
     st.markdown("""
-    <div style="text-align:center;padding:18px 0 8px">
+    <div style="text-align:center;padding:4px 0 8px">
       <div style="font-size:52px;margin-bottom:6px">⚡</div>
       <h1 style="font-size:30px;font-weight:800;margin:0">ARIA</h1>
       <p style="font-size:14px;color:#9CA3AF;margin:6px 0 0">
@@ -947,8 +947,6 @@ def screen_auth():
                         st.error(msg)
 
         st.divider()
-        st.caption("Your data is stored securely in Google Sheets. "
-                   "Passwords are stored as SHA-256 hashes — never in plain text.")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
