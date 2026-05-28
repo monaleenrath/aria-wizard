@@ -543,7 +543,13 @@ _SCHED_HDRS = ["schedule_id", "user_email", "user_name", "repo_url", "github_use
 
 
 def _get_gs():
-    """Return authenticated gspread client, or None on failure."""
+    """Return authenticated gspread client, or None on failure.
+
+    Supports three secret formats in Streamlit Cloud:
+      1. [GOOGLE_CREDS_JSON] TOML section  ← recommended, no escaping issues
+      2. GOOGLE_CREDS_JSON = '''{ raw json }'''  (literal TOML string)
+      3. Local google_creds.json file (dev only)
+    """
     try:
         import gspread, json
         SCOPES = [
@@ -551,51 +557,70 @@ def _get_gs():
             "https://www.googleapis.com/auth/drive",
             "https://www.googleapis.com/auth/spreadsheets",
         ]
-        # Read credentials — Streamlit Cloud secrets first, local file fallback
-        raw = ""
+
+        info = None
+
+        # ── Option 1: TOML section [GOOGLE_CREDS_JSON] ──────────────────────
+        # Streamlit parses this into a dict-like AttrDict — no JSON needed.
         try:
-            raw = st.secrets.get("GOOGLE_CREDS_JSON", "") or ""
+            secret = st.secrets.get("GOOGLE_CREDS_JSON")
+            if secret is not None and hasattr(secret, "keys"):
+                info = {k: str(v) for k, v in secret.items()}
         except Exception:
             pass
-        if not raw:
-            creds_path = _ROOT / "google_creds.json"
-            if creds_path.exists():
-                raw = creds_path.read_text(encoding="utf-8")
-        if not raw:
-            st.session_state["_gs_last_error"] = "GOOGLE_CREDS_JSON secret not found"
-            return None
-        # TOML basic strings (""") convert \n to real newlines inside JSON string
-        # values, producing invalid control characters. Re-escape them so
-        # json.loads() succeeds regardless of how the secret was quoted in Streamlit.
-        def _fix_ctrl(s: str) -> str:
-            result, in_str, i = [], False, 0
-            while i < len(s):
-                c = s[i]
-                if not in_str:
-                    result.append(c)
-                    if c == '"':
-                        in_str = True
-                else:
-                    if c == '\\':          # escape sequence — copy both chars
-                        result.append(c)
+
+        # ── Option 2: raw JSON string ────────────────────────────────────────
+        if info is None:
+            raw = ""
+            try:
+                val = st.secrets.get("GOOGLE_CREDS_JSON", "")
+                if val and not hasattr(val, "keys"):
+                    raw = str(val)
+            except Exception:
+                pass
+            if not raw:
+                creds_path = _ROOT / "google_creds.json"
+                if creds_path.exists():
+                    raw = creds_path.read_text(encoding="utf-8")
+            if raw:
+                # Re-escape any control chars that TOML may have injected
+                # into JSON string values (from basic """ strings).
+                def _fix_ctrl(s: str) -> str:
+                    result, in_str, i = [], False, 0
+                    while i < len(s):
+                        c = s[i]
+                        if not in_str:
+                            result.append(c)
+                            if c == '"':
+                                in_str = True
+                        else:
+                            if c == '\\':
+                                result.append(c)
+                                i += 1
+                                if i < len(s):
+                                    result.append(s[i])
+                            elif c == '"':
+                                result.append(c)
+                                in_str = False
+                            elif c == '\n':
+                                result.append('\\n')
+                            elif c == '\r':
+                                result.append('\\r')
+                            elif c == '\t':
+                                result.append('\\t')
+                            else:
+                                result.append(c)
                         i += 1
-                        if i < len(s):
-                            result.append(s[i])
-                    elif c == '"':
-                        result.append(c)
-                        in_str = False
-                    elif c == '\n':
-                        result.append('\\n')
-                    elif c == '\r':
-                        result.append('\\r')
-                    elif c == '\t':
-                        result.append('\\t')
-                    else:
-                        result.append(c)
-                i += 1
-            return ''.join(result)
-        info = json.loads(_fix_ctrl(raw))
-        # gspread 6+ — use service_account_from_dict (authorize() is deprecated)
+                    return ''.join(result)
+                info = json.loads(_fix_ctrl(raw))
+
+        if info is None:
+            st.session_state["_gs_last_error"] = (
+                "GOOGLE_CREDS_JSON not found — add it to Streamlit Cloud secrets"
+            )
+            return None
+
+        # gspread 6+ — service_account_from_dict (authorize() is deprecated)
         gc = gspread.service_account_from_dict(info, scopes=SCOPES)
         return gc
     except Exception as e:
