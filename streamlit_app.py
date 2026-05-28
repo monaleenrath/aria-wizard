@@ -801,6 +801,19 @@ def render_help_sidebar():
 
 def screen_auth():
     """Full-page login / register screen shown when no user is in session."""
+    # ── Read remembered email from browser localStorage ───────────────────── #
+    _remembered_email = ""
+    try:
+        from streamlit_js_eval import streamlit_js_eval
+        _rem = streamlit_js_eval(
+            js_expressions="localStorage.getItem('aria_rem_email') || ''",
+            key="read_rem_email",
+        )
+        if _rem and isinstance(_rem, str):
+            _remembered_email = _rem
+    except Exception:
+        pass
+
     st.markdown("""
     <div style="text-align:center;padding:40px 0 8px">
       <div style="font-size:52px;margin-bottom:6px">⚡</div>
@@ -817,9 +830,16 @@ def screen_auth():
 
         # ── Sign In ──────────────────────────────────────────────────────── #
         with tab_in:
-            email_in = st.text_input("Email address", key="login_email",
-                                      placeholder="you@example.com")
-            pw_in    = st.text_input("Password", type="password", key="login_pw")
+            email_in = st.text_input(
+                "Email address", key="login_email",
+                placeholder="you@example.com",
+                value=_remembered_email,
+            )
+            pw_in       = st.text_input("Password", type="password", key="login_pw")
+            remember_me = st.checkbox(
+                "Remember me", value=bool(_remembered_email), key="remember_me",
+                help="Saves your email in this browser so you don't have to type it next time.",
+            )
             if st.button("Sign In →", type="primary", use_container_width=True, key="btn_login"):
                 if not email_in or not pw_in:
                     st.error("Please enter your email and password.")
@@ -829,6 +849,22 @@ def screen_auth():
                     if user:
                         st.session_state.user = user
                         log_activity(user["email"], user["name"], "login", "Signed in")
+                        # Save / clear remembered email in localStorage
+                        try:
+                            from streamlit_js_eval import streamlit_js_eval
+                            if remember_me:
+                                safe_email = email_in.strip().replace("'", "\\'")
+                                streamlit_js_eval(
+                                    js_expressions=f"localStorage.setItem('aria_rem_email', '{safe_email}')",
+                                    key="save_rem_email",
+                                )
+                            else:
+                                streamlit_js_eval(
+                                    js_expressions="localStorage.removeItem('aria_rem_email')",
+                                    key="clear_rem_email",
+                                )
+                        except Exception:
+                            pass
                         st.rerun()
                     else:
                         st.error("Incorrect email or password.")
@@ -885,8 +921,8 @@ def render_account_sidebar():
             if is_admin else ""
         )
         st.markdown(
-            f'<div style="text-align:center;padding:20px 0 12px">'
-            f'<div style="width:60px;height:60px;border-radius:50%;'
+            f'<div style="text-align:center;padding:10px 0 8px">'
+            f'<div style="width:52px;height:52px;border-radius:50%;'
             f'background:{accent_col};display:inline-flex;'
             f'align-items:center;justify-content:center;'
             f'color:#fff;font-size:22px;font-weight:800">{initials}</div>'
@@ -2589,15 +2625,18 @@ def step_choose_ai():
             st.rerun()
 
     if st.session_state.ai_provider == "gemini":
-        ki1, ki2 = st.columns([6, 1])
-        ki1.markdown(
-            '<div style="border:1px solid #374151;border-radius:6px;padding:7px 12px;'
-            'font-size:13px;line-height:1.4;display:flex;align-items:center;gap:6px">'
+        # Single-line flex row — info strip + help button perfectly vertically aligned
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
+            '<div style="flex:1;border:1px solid #374151;border-radius:6px;'
+            'padding:7px 14px;font-size:13px;line-height:1">'
             '🔑&nbsp; Get your free Gemini key at '
             '<a href="https://aistudio.google.com/app/apikey" target="_blank" '
-            'style="color:#F59E0B">aistudio.google.com/app/apikey</a></div>',
+            'style="color:#F59E0B">aistudio.google.com/app/apikey</a></div>'
+            '</div>',
             unsafe_allow_html=True,
         )
+        _, ki2 = st.columns([6, 1])
         with ki2:
             help_tip("gemini_key")
         kv = st.text_input("Paste key here (stored as a GitHub Secret, not locally)",
@@ -2810,13 +2849,15 @@ def step_preview_card():
             )
             col.markdown(
                 f'<div style="background:{bg_col};border:2px solid {border_col};'
-                f'border-radius:12px;padding:14px 12px;min-height:110px">'
+                f'border-radius:12px;padding:14px 12px;height:148px;'
+                f'box-sizing:border-box;overflow:hidden;display:flex;'
+                f'flex-direction:column;justify-content:flex-start">'
                 f'<div style="font-size:22px;font-weight:900;color:{label_col};'
-                f'letter-spacing:-0.5px">{tf["short"]}</div>'
+                f'letter-spacing:-0.5px;line-height:1">{tf["short"]}</div>'
                 f'<div style="font-size:12px;font-weight:700;color:{label_col};'
-                f'margin-top:2px">{tf["label"]}</div>'
-                f'<div style="font-size:10px;color:#6B7280;margin-top:4px;'
-                f'line-height:1.4">{tf["desc"]}</div>'
+                f'margin-top:3px">{tf["label"]}</div>'
+                f'<div style="font-size:10px;color:#6B7280;margin-top:5px;'
+                f'line-height:1.35;flex:1;overflow:hidden">{tf["desc"]}</div>'
                 f'{badge_html}'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -3571,6 +3612,28 @@ def main():
 
       /* ── Sidebar account panel ── */
       [data-testid="stSidebar"] { min-width: 220px; max-width: 240px; }
+
+      /* ── Suppress sidebar vertical scroll ── */
+      [data-testid="stSidebar"] > div:first-child {
+          overflow-y: hidden !important;
+          overflow-x: hidden !important;
+      }
+      [data-testid="stSidebar"]:hover > div:first-child {
+          overflow-y: auto !important;
+      }
+
+      /* ── Tighten sidebar element gaps to fit help expander without scroll ── */
+      [data-testid="stSidebar"] .stButton > button {
+          padding-top: 4px !important;
+          padding-bottom: 4px !important;
+          min-height: 34px !important;
+      }
+      [data-testid="stSidebar"] hr {
+          margin: 6px 0 !important;
+      }
+      [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {
+          gap: 4px !important;
+      }
     </style>
     """, unsafe_allow_html=True)
 
