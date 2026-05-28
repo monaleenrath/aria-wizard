@@ -1888,14 +1888,53 @@ def _gh_api(method: str, path: str, token: str, data=None):
     return getattr(_req, method)(url, headers=headers, json=data, timeout=12)
 
 
-def _gh_encrypt_secret(public_key_str: str, secret_value: str) -> str | None:
+def _gh_encrypt_secret(public_key_str: str, secret_value: str):
+    """Encrypt a secret for GitHub Actions using libsodium crypto_box_seal.
+    Tries PyNaCl first; falls back to ctypes/libsodium directly for Python 3.14+
+    environments where PyNaCl's cffi bindings may not yet be compatible.
+    """
+    pk_raw  = base64.b64decode(public_key_str)
+    msg     = secret_value.encode("utf-8")
+
+    # ── Attempt 1: PyNaCl (clean path) ────────────────────────────────────────
     try:
-        from nacl import encoding, public as nacl_public
-        pk  = nacl_public.PublicKey(public_key_str.encode(), encoding.Base64Encoder())
-        box = nacl_public.SealedBox(pk)
-        enc = box.encrypt(secret_value.encode())
-        return base64.b64encode(enc).decode()
-    except ImportError:
+        from nacl.public import PublicKey, SealedBox
+        pk  = PublicKey(pk_raw)
+        box = SealedBox(pk)
+        enc = box.encrypt(msg)
+        return base64.b64encode(bytes(enc)).decode("utf-8")
+    except Exception:
+        pass  # fall through to ctypes path
+
+    # ── Attempt 2: libsodium via ctypes (works when PyNaCl cffi breaks on 3.14) ─
+    try:
+        import ctypes, ctypes.util
+        _lib_name = ctypes.util.find_library("sodium")
+        # common paths on Debian/Ubuntu (Streamlit Cloud)
+        for candidate in [_lib_name, "libsodium.so", "libsodium.so.23", "libsodium.so.26"]:
+            if not candidate:
+                continue
+            try:
+                _lib = ctypes.CDLL(candidate)
+                break
+            except OSError:
+                continue
+        else:
+            raise RuntimeError("libsodium shared library not found")
+
+        SEAL_BYTES = 48  # crypto_box_SEALBYTES
+        cipher_buf = ctypes.create_string_buffer(len(msg) + SEAL_BYTES)
+        ret = _lib.crypto_box_seal(
+            cipher_buf,
+            ctypes.c_char_p(msg),
+            ctypes.c_ulonglong(len(msg)),
+            ctypes.c_char_p(pk_raw),
+        )
+        if ret != 0:
+            raise RuntimeError(f"crypto_box_seal returned {ret}")
+        return base64.b64encode(bytes(cipher_buf)).decode("utf-8")
+    except Exception as e:
+        st.session_state["_nacl_err"] = f"{type(e).__name__}: {e}"
         return None
 
 
@@ -1904,9 +1943,13 @@ def _gh_set_secret(owner: str, repo: str, token: str, name: str, value: str) -> 
     if r.status_code != 200:
         return False, f"Could not fetch repo public key (HTTP {r.status_code})"
     pk_data = r.json()
+    st.session_state.pop("_nacl_err", None)
     enc = _gh_encrypt_secret(pk_data["key"], value)
     if enc is None:
-        return False, "PyNaCl not installed — run `pip install PyNaCl` then retry"
+        nacl_err = st.session_state.pop("_nacl_err", "")
+        if nacl_err:
+            return False, f"Encryption error ({nacl_err}) — add this secret manually in GitHub → Settings → Secrets → Actions"
+        return False, "PyNaCl unavailable — add this secret manually in GitHub → Settings → Secrets → Actions"
     r2 = _gh_api("put", f"/repos/{owner}/{repo}/actions/secrets/{name}", token,
                   data={"encrypted_value": enc, "key_id": pk_data["key_id"]})
     if r2.status_code in (201, 204):
