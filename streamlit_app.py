@@ -841,6 +841,12 @@ def screen_auth():
             if "login_email" not in st.session_state:
                 st.session_state.login_email = _remembered_email
 
+            # Apply suggestion-button selection BEFORE widget renders (avoids
+            # StreamlitAPIException from setting a widget key post-render)
+            _prefill = st.session_state.pop("_email_prefill", None)
+            if _prefill is not None:
+                st.session_state.login_email = _prefill
+
             email_in = st.text_input(
                 "Email address", key="login_email",
                 placeholder="you@example.com",
@@ -867,7 +873,8 @@ def screen_auth():
                                 match, key=f"email_hint_{match}",
                                 use_container_width=True,
                             ):
-                                st.session_state.login_email = match
+                                # Stage the value; applied before widget renders next run
+                                st.session_state._email_prefill = match
                                 st.rerun()
 
             pw_in       = st.text_input("Password", type="password", key="login_pw")
