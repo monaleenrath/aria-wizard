@@ -2701,7 +2701,7 @@ def step_choose_ai():
         pros_html = "".join(f"✅ {p}<br>" for p in pros)
         col.markdown(
             f'<div style="border:2px solid {border};background:{bg};border-radius:12px;'
-            f'padding:20px;min-height:200px">'
+            f'padding:20px;min-height:200px;margin-bottom:8px">'
             f'<div style="font-size:26px;margin-bottom:6px">{emoji}</div>'
             f'<div style="font-weight:800;font-size:15px;margin-bottom:3px">{title}</div>'
             f'<div style="font-size:11px;color:#9CA3AF;margin-bottom:10px">{tagline}</div>'
@@ -2714,14 +2714,15 @@ def step_choose_ai():
             st.rerun()
 
     if st.session_state.ai_provider == "gemini":
-        ki1, ki2 = st.columns([11, 1], vertical_alignment="center")
+        ki1, ki2 = st.columns([11, 1], vertical_alignment="top")
         with ki1:
             st.markdown(
                 '<div style="border:1px solid #374151;border-radius:6px;'
-                'padding:8px 14px;font-size:13px;line-height:1.2">'
+                'height:38px;box-sizing:border-box;display:flex;align-items:center;'
+                'padding:0 14px;font-size:13px;white-space:nowrap;overflow:hidden">'
                 '🔑&nbsp; Get your free Gemini key at '
                 '<a href="https://aistudio.google.com/app/apikey" target="_blank" '
-                'style="color:#F59E0B">aistudio.google.com/app/apikey</a></div>',
+                'style="color:#F59E0B;margin-left:4px">aistudio.google.com/app/apikey</a></div>',
                 unsafe_allow_html=True,
             )
         with ki2:
