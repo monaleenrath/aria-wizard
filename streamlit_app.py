@@ -564,7 +564,37 @@ def _get_gs():
         if not raw:
             st.session_state["_gs_last_error"] = "GOOGLE_CREDS_JSON secret not found"
             return None
-        info = json.loads(raw)
+        # TOML basic strings (""") convert \n to real newlines inside JSON string
+        # values, producing invalid control characters. Re-escape them so
+        # json.loads() succeeds regardless of how the secret was quoted in Streamlit.
+        def _fix_ctrl(s: str) -> str:
+            result, in_str, i = [], False, 0
+            while i < len(s):
+                c = s[i]
+                if not in_str:
+                    result.append(c)
+                    if c == '"':
+                        in_str = True
+                else:
+                    if c == '\\':          # escape sequence — copy both chars
+                        result.append(c)
+                        i += 1
+                        if i < len(s):
+                            result.append(s[i])
+                    elif c == '"':
+                        result.append(c)
+                        in_str = False
+                    elif c == '\n':
+                        result.append('\\n')
+                    elif c == '\r':
+                        result.append('\\r')
+                    elif c == '\t':
+                        result.append('\\t')
+                    else:
+                        result.append(c)
+                i += 1
+            return ''.join(result)
+        info = json.loads(_fix_ctrl(raw))
         # gspread 6+ — use service_account_from_dict (authorize() is deprecated)
         gc = gspread.service_account_from_dict(info, scopes=SCOPES)
         return gc
