@@ -546,16 +546,30 @@ def _get_gs():
     """Return authenticated gspread client, or None on failure."""
     try:
         import gspread, json
-        from google.oauth2.service_account import Credentials
-        SCOPES = ["https://spreadsheets.google.com/feeds",
-                  "https://www.googleapis.com/auth/drive"]
-        raw = st.secrets.get("GOOGLE_CREDS_JSON", "") or ""
+        SCOPES = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+        ]
+        # Read credentials — Streamlit Cloud secrets first, local file fallback
+        raw = ""
+        try:
+            raw = st.secrets.get("GOOGLE_CREDS_JSON", "") or ""
+        except Exception:
+            pass
         if not raw:
-            raw = (_ROOT / "google_creds.json").read_text(encoding="utf-8")
-        info  = json.loads(raw)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-        return gspread.authorize(creds)
-    except Exception:
+            creds_path = _ROOT / "google_creds.json"
+            if creds_path.exists():
+                raw = creds_path.read_text(encoding="utf-8")
+        if not raw:
+            st.session_state["_gs_last_error"] = "GOOGLE_CREDS_JSON secret not found"
+            return None
+        info = json.loads(raw)
+        # gspread 6+ — use service_account_from_dict (authorize() is deprecated)
+        gc = gspread.service_account_from_dict(info, scopes=SCOPES)
+        return gc
+    except Exception as e:
+        st.session_state["_gs_last_error"] = f"{type(e).__name__}: {e}"
         return None
 
 
@@ -593,7 +607,8 @@ def _gs_append(tab: str, row: list, headers: list) -> bool:
         ws.append_row(row, value_input_option="RAW")
         _gs_read.clear()          # bust cache
         return True
-    except Exception:
+    except Exception as e:
+        st.session_state["_gs_last_error"] = f"_gs_append({tab}): {type(e).__name__}: {e}"
         return False
 
 
@@ -650,7 +665,9 @@ def auth_register(email: str, name: str, password: str) -> tuple[bool, str]:
     if ok:
         log_activity(email.lower(), name, "register", "New account created")
         return True, "Account created! You can now sign in."
-    return False, "Could not save account — please try again in a moment."
+    err = st.session_state.get("_gs_last_error", "")
+    detail = f"\n\n`{err}`" if err else ""
+    return False, f"Could not save account — please try again in a moment.{detail}"
 
 
 def log_activity(user_email: str, user_name: str, action: str, details: str = ""):
