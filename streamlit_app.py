@@ -822,7 +822,7 @@ def screen_auth():
         pass
 
     st.markdown("""
-    <div style="text-align:center;padding:40px 0 8px">
+    <div style="text-align:center;padding:18px 0 8px">
       <div style="font-size:52px;margin-bottom:6px">⚡</div>
       <h1 style="font-size:30px;font-weight:800;margin:0">ARIA</h1>
       <p style="font-size:14px;color:#9CA3AF;margin:6px 0 0">
@@ -3654,9 +3654,9 @@ def step_export_go():
             dc1, dc2 = st.columns(2)
             dc1.markdown(
                 "**📥 Fastest: Download file (Artifacts)**\n\n"
-                "Available immediately after the run finishes. "
-                "Go to your Actions run → scroll to the bottom → click **aria-reports** "
-                "under *Artifacts* to download the Markdown + Word report. "
+                "Go to your Actions run → click on **Artifacts** available at the top of the "
+                "summary page right next to Status & Total duration → at the bottom of the page "
+                "click **aria-reports** under Artifacts to download the Markdown + Word report. "
                 "No queue delay for reading — the file is ready the moment the green ✓ appears."
             )
             dc2.markdown(
