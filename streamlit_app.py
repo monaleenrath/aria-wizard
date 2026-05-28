@@ -1901,6 +1901,14 @@ def _gh_encrypt_secret(public_key_str: str, secret_value: str):
     environments where PyNaCl's cffi bindings may not yet be compatible.
     """
     pk_raw  = base64.b64decode(public_key_str)
+    # Guard: convert AttrDict / any non-str to plain string
+    if not isinstance(secret_value, str):
+        try:
+            import json as _j
+            secret_value = _j.dumps({k: str(v) for k, v in secret_value.items()}) \
+                           if hasattr(secret_value, "keys") else str(secret_value)
+        except Exception:
+            secret_value = str(secret_value)
     msg     = secret_value.encode("utf-8")
 
     # ── Attempt 1: PyNaCl (clean path) ────────────────────────────────────────
@@ -3480,9 +3488,25 @@ def step_export_go():
             # Google credentials — try st.secrets first (Streamlit Cloud),
             # then fall back to local file (local dev). Not needed for public sheets
             # (data_loader uses CSV export), but set it if available for future use.
+            import json as _json
+
+            def _to_str(v) -> str:
+                """Ensure a secrets value is a plain string.
+                st.secrets.get() returns AttrDict for TOML-section secrets, not str."""
+                if v is None:
+                    return ""
+                if isinstance(v, str):
+                    return v
+                if hasattr(v, "keys"):
+                    # TOML-section AttrDict → serialize back to JSON string
+                    return _json.dumps({k: str(val) for k, val in v.items()})
+                return str(v)
+
             _gcreds_val = None
             try:
-                _gcreds_val = st.secrets.get("GOOGLE_CREDS_JSON")
+                _raw = st.secrets.get("GOOGLE_CREDS_JSON")
+                if _raw is not None:
+                    _gcreds_val = _to_str(_raw)
             except Exception:
                 pass
             if not _gcreds_val:
@@ -3496,21 +3520,21 @@ def step_export_go():
                 secrets_to_set["GOOGLE_CREDS_JSON"] = _gcreds_val
 
             if provider == "gemini" and st.session_state.get("gemini_key"):
-                secrets_to_set["GEMINI_API_KEY"] = st.session_state.gemini_key
+                secrets_to_set["GEMINI_API_KEY"] = _to_str(st.session_state.gemini_key)
             if "slack" in channels:
                 if st.session_state.get("slack_token"):
-                    secrets_to_set["SLACK_BOT_TOKEN"] = st.session_state.slack_token
+                    secrets_to_set["SLACK_BOT_TOKEN"] = _to_str(st.session_state.slack_token)
                 if st.session_state.get("slack_channel"):
-                    secrets_to_set["SLACK_CHANNEL_ID"] = st.session_state.slack_channel
+                    secrets_to_set["SLACK_CHANNEL_ID"] = _to_str(st.session_state.slack_channel)
             if "teams" in channels and st.session_state.get("teams_webhook"):
-                secrets_to_set["TEAMS_WEBHOOK_URL"] = st.session_state.teams_webhook
+                secrets_to_set["TEAMS_WEBHOOK_URL"] = _to_str(st.session_state.teams_webhook)
             if "email" in channels:
                 if st.session_state.get("email_sender"):
-                    secrets_to_set["EMAIL_SENDER"] = st.session_state.email_sender
+                    secrets_to_set["EMAIL_SENDER"] = _to_str(st.session_state.email_sender)
                 if st.session_state.get("email_app_password"):
-                    secrets_to_set["EMAIL_APP_PASSWORD"] = st.session_state.email_app_password
+                    secrets_to_set["EMAIL_APP_PASSWORD"] = _to_str(st.session_state.email_app_password)
                 if st.session_state.get("email_recipient"):
-                    secrets_to_set["EMAIL_RECIPIENT"] = st.session_state.email_recipient
+                    secrets_to_set["EMAIL_RECIPIENT"] = _to_str(st.session_state.email_recipient)
 
             for sname, sval in secrets_to_set.items():
                 ok, m = _gh_set_secret(owner, repo, pat, sname, sval)
