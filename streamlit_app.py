@@ -2671,20 +2671,18 @@ def step_choose_ai():
             st.rerun()
 
     if st.session_state.ai_provider == "gemini":
-        ki1, ki2 = st.columns([11, 1])
+        ki1, ki2 = st.columns([11, 1], vertical_alignment="center")
         with ki1:
             st.markdown(
                 '<div style="border:1px solid #374151;border-radius:6px;'
-                'padding:7px 14px;font-size:13px;line-height:1;margin-top:4px">'
+                'padding:8px 14px;font-size:13px;line-height:1.2">'
                 '🔑&nbsp; Get your free Gemini key at '
                 '<a href="https://aistudio.google.com/app/apikey" target="_blank" '
                 'style="color:#F59E0B">aistudio.google.com/app/apikey</a></div>',
                 unsafe_allow_html=True,
             )
         with ki2:
-            st.markdown("<div style='margin-top:4px'>", unsafe_allow_html=True)
             help_tip("gemini_key")
-            st.markdown("</div>", unsafe_allow_html=True)
         kv = st.text_input("Paste key here (stored as a GitHub Secret, not locally)",
                             type="password", placeholder="AIza...", key="gemini_key_input")
         if kv:
@@ -2849,7 +2847,8 @@ def step_preview_card():
         swatch = f"linear-gradient(135deg, {sd['bg']} 50%, {preview_accent} 50%)"
         border = preview_accent if is_sel else "#374151"
         col.markdown(
-            f'<div style="border:2.5px solid {border};border-radius:10px;padding:10px 8px;text-align:center">'
+            f'<div style="border:2.5px solid {border};border-radius:10px;padding:10px 8px;'
+            f'text-align:center;margin-bottom:8px">'
             f'<div style="width:100%;height:34px;border-radius:6px;'
             f'background:{swatch};margin-bottom:7px"></div>'
             f'<div style="font-size:11px;font-weight:700;color:{"#F59E0B" if is_sel else "var(--color-text-primary)"}">'
