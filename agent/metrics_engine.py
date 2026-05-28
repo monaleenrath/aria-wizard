@@ -114,6 +114,21 @@ def _aggregate(df: pd.DataFrame, kpi_cfg: dict) -> float:
         return float(df[col].nunique())
     if agg == "mean":
         return float(df[col].mean())
+    if agg == "ratio":
+        # Derived ratio KPI: num_col / den_col * scale
+        # e.g. Profit Margin = SUM(Profit) / SUM(Sales) * 100
+        num_col = kpi_cfg.get("num_col", col)
+        den_col = kpi_cfg.get("den_col")
+        den_agg = kpi_cfg.get("den_agg", "sum")
+        scale   = float(kpi_cfg.get("scale", 1))
+        if not den_col:
+            return 0.0
+        num_val = float(df[num_col].sum()) if num_col in df.columns else 0.0
+        if den_agg == "nunique":
+            den_val = float(df[den_col].nunique()) if den_col in df.columns else 0.0
+        else:
+            den_val = float(df[den_col].sum()) if den_col in df.columns else 0.0
+        return (num_val / den_val * scale) if den_val != 0 else 0.0
     raise ValueError(f"Unsupported agg: {agg}")
 
 
