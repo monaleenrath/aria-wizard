@@ -203,6 +203,24 @@ roles:
       say which one and by how much. If a number is up, say why and how to
       keep it that way.
 
+  Business Analyst:
+    title: "Business Analyst"
+    badge: "BA  ·  ANALYSIS BRIEFING"
+    slack_channel: ""
+    tier: "management"
+    primary_kpi: "Sales"
+    kpis: ["Sales", "Profit", "Margin%", "Orders"]
+    accent_color: "#818CF8"        # indigo — analytical precision
+    driver_focus: ["Sub-Category", "Segment", "Region"]
+    tone: >
+      Data-driven and hypothesis-led. The Business Analyst needs signal, not noise.
+      Lead with the strongest anomaly or trend break, then state the most likely
+      root cause as a hypothesis with supporting data points. Call out any compound
+      signals (e.g. Sales up but Margin down) — these are your headline story.
+      One clear analytical recommendation with a defined success metric. Frame
+      every number with a comparison: vs yesterday, vs 7-day average, vs target.
+      Avoid management-speak — favour precise, quantified language.
+
   Operations Head:
     title: "Operations Head"
     badge: "OPS  ·  OPERATIONS BRIEFING"
