@@ -801,8 +801,9 @@ def render_help_sidebar():
 
 def screen_auth():
     """Full-page login / register screen shown when no user is in session."""
-    # ── Read remembered email from browser localStorage ───────────────────── #
+    # ── Read remembered email + full email history from localStorage ─────── #
     _remembered_email = ""
+    _email_history: list[str] = []
     try:
         from streamlit_js_eval import streamlit_js_eval
         _rem = streamlit_js_eval(
@@ -811,6 +812,12 @@ def screen_auth():
         )
         if _rem and isinstance(_rem, str):
             _remembered_email = _rem
+        _hist = streamlit_js_eval(
+            js_expressions="JSON.parse(localStorage.getItem('aria_email_history') || '[]')",
+            key="read_email_history",
+        )
+        if isinstance(_hist, list):
+            _email_history = [e for e in _hist if isinstance(e, str) and e]
     except Exception:
         pass
 
@@ -830,15 +837,43 @@ def screen_auth():
 
         # ── Sign In ──────────────────────────────────────────────────────── #
         with tab_in:
+            # Seed email field from remembered value on first render only
+            if "login_email" not in st.session_state:
+                st.session_state.login_email = _remembered_email
+
             email_in = st.text_input(
                 "Email address", key="login_email",
                 placeholder="you@example.com",
-                value=_remembered_email,
             )
+
+            # ── Email suggestions (history-based autocomplete) ────────────── #
+            typed = (email_in or "").strip().lower()
+            if _email_history:
+                if typed:
+                    # Filter history to entries that contain what's typed
+                    matches = [
+                        e for e in _email_history
+                        if typed in e.lower() and e.lower() != typed
+                    ]
+                else:
+                    # Nothing typed yet → show full history
+                    matches = _email_history
+                if matches:
+                    st.caption("Recent accounts — click to fill:")
+                    btn_cols = st.columns(min(len(matches), 3))
+                    for idx, match in enumerate(matches[:3]):
+                        with btn_cols[idx]:
+                            if st.button(
+                                match, key=f"email_hint_{match}",
+                                use_container_width=True,
+                            ):
+                                st.session_state.login_email = match
+                                st.rerun()
+
             pw_in       = st.text_input("Password", type="password", key="login_pw")
             remember_me = st.checkbox(
                 "Remember me", value=bool(_remembered_email), key="remember_me",
-                help="Saves your email in this browser so you don't have to type it next time.",
+                help="Auto-fills your email on your next visit to this browser.",
             )
             if st.button("Sign In →", type="primary", use_container_width=True, key="btn_login"):
                 if not email_in or not pw_in:
@@ -849,13 +884,24 @@ def screen_auth():
                     if user:
                         st.session_state.user = user
                         log_activity(user["email"], user["name"], "login", "Signed in")
-                        # Save / clear remembered email in localStorage
                         try:
                             from streamlit_js_eval import streamlit_js_eval
+                            safe_email = email_in.strip().replace("'", "\\'")
+                            # Always add to history (max 5, most recent first)
+                            streamlit_js_eval(
+                                js_expressions=(
+                                    f"var h=JSON.parse(localStorage.getItem('aria_email_history')||'[]');"
+                                    f"h=h.filter(e=>e!=='{safe_email}');"
+                                    f"h.unshift('{safe_email}');"
+                                    f"h=h.slice(0,5);"
+                                    f"localStorage.setItem('aria_email_history',JSON.stringify(h));"
+                                ),
+                                key="save_email_history",
+                            )
+                            # Remember me: keep/clear the auto-fill email
                             if remember_me:
-                                safe_email = email_in.strip().replace("'", "\\'")
                                 streamlit_js_eval(
-                                    js_expressions=f"localStorage.setItem('aria_rem_email', '{safe_email}')",
+                                    js_expressions=f"localStorage.setItem('aria_rem_email','{safe_email}')",
                                     key="save_rem_email",
                                 )
                             else:
@@ -2625,20 +2671,20 @@ def step_choose_ai():
             st.rerun()
 
     if st.session_state.ai_provider == "gemini":
-        # Single-line flex row — info strip + help button perfectly vertically aligned
-        st.markdown(
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
-            '<div style="flex:1;border:1px solid #374151;border-radius:6px;'
-            'padding:7px 14px;font-size:13px;line-height:1">'
-            '🔑&nbsp; Get your free Gemini key at '
-            '<a href="https://aistudio.google.com/app/apikey" target="_blank" '
-            'style="color:#F59E0B">aistudio.google.com/app/apikey</a></div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        _, ki2 = st.columns([6, 1])
+        ki1, ki2 = st.columns([11, 1])
+        with ki1:
+            st.markdown(
+                '<div style="border:1px solid #374151;border-radius:6px;'
+                'padding:7px 14px;font-size:13px;line-height:1;margin-top:4px">'
+                '🔑&nbsp; Get your free Gemini key at '
+                '<a href="https://aistudio.google.com/app/apikey" target="_blank" '
+                'style="color:#F59E0B">aistudio.google.com/app/apikey</a></div>',
+                unsafe_allow_html=True,
+            )
         with ki2:
+            st.markdown("<div style='margin-top:4px'>", unsafe_allow_html=True)
             help_tip("gemini_key")
+            st.markdown("</div>", unsafe_allow_html=True)
         kv = st.text_input("Paste key here (stored as a GitHub Secret, not locally)",
                             type="password", placeholder="AIza...", key="gemini_key_input")
         if kv:
@@ -2851,7 +2897,8 @@ def step_preview_card():
                 f'<div style="background:{bg_col};border:2px solid {border_col};'
                 f'border-radius:12px;padding:14px 12px;height:148px;'
                 f'box-sizing:border-box;overflow:hidden;display:flex;'
-                f'flex-direction:column;justify-content:flex-start">'
+                f'flex-direction:column;justify-content:flex-start;'
+                f'margin-bottom:8px">'
                 f'<div style="font-size:22px;font-weight:900;color:{label_col};'
                 f'letter-spacing:-0.5px;line-height:1">{tf["short"]}</div>'
                 f'<div style="font-size:12px;font-weight:700;color:{label_col};'
@@ -3287,6 +3334,21 @@ def step_export_go():
             dl1.download_button("config.yaml", config_yaml, "config.yaml", "text/plain", use_container_width=True)
             dl2.download_button("roles.yaml",  roles_yaml,  "roles.yaml",  "text/plain", use_container_width=True)
 
+        # ── Bottom nav — Back (left) + Reset All (right) ─────────────────── #
+        st.divider()
+        _nav_a_l, _nav_a_mid, _nav_a_r = st.columns([1, 2, 2])
+        if _nav_a_l.button("← Back", use_container_width=True, key="s8a_back"):
+            st.session_state.step -= 1
+            st.rerun()
+        if _nav_a_r.button("🔄 Reset All Selections", use_container_width=True,
+                            type="secondary", key="s8a_reset"):
+            _u = st.session_state.get("user")
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            if _u:
+                st.session_state.user = _u
+            st.rerun()
+
         # ── Execute launch when button clicked ───────────────────────────── #
         if st.session_state.get("launch_triggered"):
             st.session_state.pop("launch_triggered", None)
@@ -3546,19 +3608,24 @@ def step_export_go():
                 "4. After fixing, click **Re-run all jobs** (top-right of the run page) to retry."
             )
 
-        # "Edit Settings" keeps all wizard data — just clears the launch result
-        # so the user goes back to Step 8 with everything pre-filled.
-        c_edit, c_reset = st.columns([2, 1])
-        if c_edit.button("⚙️ Edit Settings", use_container_width=True):
+        # ── Bottom nav — Back (left) + Reset All (right) ─────────────────── #
+        st.divider()
+        _nav_b_l, _nav_b_mid, _nav_b_r = st.columns([1, 2, 2])
+        if _nav_b_l.button("← Back", use_container_width=True, key="s8b_back"):
+            # Clear launch state so user returns to Screen A (token / launch pad)
             _launch_keys = ["launch_done", "setup_results", "launch_triggered",
                             "gh_pat_valid", "gh_owner", "gh_repo", "gh_repo_final",
                             "gh_username_input", "gh_pat_input"]
             for k in _launch_keys:
                 st.session_state.pop(k, None)
             st.rerun()
-        if c_reset.button("Full Reset", use_container_width=True, type="secondary"):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+        if _nav_b_r.button("🔄 Reset All Selections", use_container_width=True,
+                            type="secondary", key="s8b_reset"):
+            _u = st.session_state.get("user")
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            if _u:
+                st.session_state.user = _u
             st.rerun()
 
 
@@ -3610,16 +3677,17 @@ def main():
       }
       [data-testid="stPopover"] > button svg { display: none !important; }
 
-      /* ── Sidebar account panel ── */
-      [data-testid="stSidebar"] { min-width: 220px; max-width: 240px; }
+      /* ── Sidebar account panel — wider to avoid text truncation ── */
+      [data-testid="stSidebar"] { min-width: 270px !important; max-width: 320px !important; }
 
-      /* ── Suppress sidebar vertical scroll ── */
+      /* ── Hide sidebar scrollbar entirely (scroll still works on drag/touch) ── */
       [data-testid="stSidebar"] > div:first-child {
-          overflow-y: hidden !important;
           overflow-x: hidden !important;
+          scrollbar-width: none !important;       /* Firefox */
+          -ms-overflow-style: none !important;    /* IE/Edge */
       }
-      [data-testid="stSidebar"]:hover > div:first-child {
-          overflow-y: auto !important;
+      [data-testid="stSidebar"] > div:first-child::-webkit-scrollbar {
+          display: none !important;               /* Chrome/Safari */
       }
 
       /* ── Tighten sidebar element gaps to fit help expander without scroll ── */
