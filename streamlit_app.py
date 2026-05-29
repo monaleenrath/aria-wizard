@@ -3097,6 +3097,28 @@ def step_preview_card():
 # STEP 8 — GO LIVE  (single form → one button → done)
 # ════════════════════════════════════════════════════════════════════════════════
 
+def _merge_roles_yaml(owner: str, repo: str, pat: str, new_roles_yaml: str) -> str:
+    """
+    Fetch the current roles.yaml from the GitHub repo and merge the new role in.
+    Preserves every existing role; adds/updates only the newly configured role.
+    Falls back to new_roles_yaml alone if the repo file can't be fetched or parsed.
+    """
+    import base64 as _b64
+    r = _gh_api("get", f"/repos/{owner}/{repo}/contents/roles.yaml", pat)
+    if r.status_code == 200:
+        try:
+            existing_content = _b64.b64decode(r.json()["content"]).decode("utf-8")
+            existing  = yaml.safe_load(existing_content) or {}
+            new_data  = yaml.safe_load(new_roles_yaml)   or {}
+            merged_roles = existing.get("roles", {})
+            merged_roles.update(new_data.get("roles", {}))   # add/overwrite just this role
+            merged = {"roles": merged_roles}
+            return yaml.dump(merged, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        except Exception:
+            pass  # parsing failed — fall through to return new_roles_yaml only
+    return new_roles_yaml
+
+
 def _build_configs() -> tuple[str, str]:
     """Build config.yaml and roles.yaml strings from session state."""
     channels      = [k for k, v in st.session_state.get("delivery", {}).items() if v]
@@ -3435,12 +3457,18 @@ def step_export_go():
 
             # 2. Push config files
             progress.progress(20, text="Pushing config files…")
-            for fname, content, msg in [
-                ("config.yaml", config_yaml, "chore: ARIA wizard config"),
-                ("roles.yaml",  roles_yaml,  "chore: ARIA wizard roles"),
-            ]:
-                ok, m = _gh_push_file(owner, repo, pat, fname, content, msg)
-                results[fname] = (ok, m)
+            # Push config.yaml as-is (one config per repo is fine)
+            ok, m = _gh_push_file(owner, repo, pat, "config.yaml", config_yaml,
+                                   "chore: ARIA wizard config")
+            results["config.yaml"] = (ok, m)
+
+            # Merge roles.yaml — fetch existing repo file and add/update THIS role.
+            # This preserves previously-configured roles (CEO, CFO, etc.) instead of
+            # overwriting the file and losing their slack_channel assignments.
+            _merged_roles = _merge_roles_yaml(owner, repo, pat, roles_yaml)
+            ok, m = _gh_push_file(owner, repo, pat, "roles.yaml", _merged_roles,
+                                   f"chore: ARIA wizard — add/update {role_name} role")
+            results["roles.yaml"] = (ok, m)
 
             # 2b. Push requirements.txt and all agent code
             progress.progress(35, text="Uploading agent code…")
