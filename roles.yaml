@@ -41,7 +41,7 @@ roles:
   CFO:
     title: "Chief Financial Officer"
     badge: "CFO  ·  FINANCIAL BRIEFING"
-    slack_channel: ""
+    slack_channel: "C0B6A6HJLJH"
     tier: "c_suite"
     primary_kpi: "Profit"
     kpis: ["Profit", "Margin%", "Sales", "Orders"]
