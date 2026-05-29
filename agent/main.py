@@ -183,6 +183,11 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
 
         # Deliver
         role_delivery: dict = {}
+        # Per-role Slack channel — empty string means "not configured"
+        _raw_channel = (role_cfg or {}).get("slack_channel", "")
+        role_channel = _raw_channel if _raw_channel else None
+        _multi_role  = len(role_items) > 1
+
         if dry_run:
             if "slack" in channels:
                 preview = render_slack_preview(narrative, config)
@@ -193,10 +198,22 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
                 role_delivery["file"] = {"status": "written"}
         else:
             if "slack" in channels:
-                if png_bytes:
-                    badge        = (role_cfg or {}).get("badge", role_name)
-                    role_channel = (role_cfg or {}).get("slack_channel")
-                    comment      = f"*{badge}  ·  {snapshot.reference_date}*"
+                # Safety guard: in multi-role setups, skip Slack when no channel
+                # is set for this role rather than falling back to a shared env var
+                # (which would route all un-configured roles to the same channel).
+                if _multi_role and not role_channel:
+                    log.warning(
+                        "Role '%s' has no slack_channel in roles.yaml — "
+                        "Slack skipped to avoid cross-channel delivery.",
+                        role_name,
+                    )
+                    role_delivery["slack"] = {
+                        "status": "skipped",
+                        "reason": f"slack_channel not set for role '{role_name}' in roles.yaml",
+                    }
+                elif png_bytes:
+                    badge   = (role_cfg or {}).get("badge", role_name)
+                    comment = f"*{badge}  ·  {snapshot.reference_date}*"
                     role_delivery["slack"] = post_image_to_slack(
                         png_bytes, narrative, config,
                         channel=role_channel,
