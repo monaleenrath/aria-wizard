@@ -1561,6 +1561,408 @@ def detect_kpis(df: pd.DataFrame) -> list:
     return suggestions
 
 
+# ════════════════════════════════════════════════════════════════════════════════
+# LLM-BASED KPI DETECTION  (Gemini 2.5 Flash → free LLM fallback → error)
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _kpi_cache_key(df: pd.DataFrame) -> tuple[str, str]:
+    """Return (domain, cache_key) where cache_key = domain + column fingerprint."""
+    import hashlib
+    domain   = detect_domain(df)
+    col_hash = hashlib.md5("|".join(sorted(df.columns.tolist())).encode()).hexdigest()[:10]
+    return domain, f"{domain}_{col_hash}"
+
+
+def _read_kpi_cache() -> dict:
+    cache_path = _ROOT / "aria_kpi_cache.json"
+    if cache_path.exists():
+        try:
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _write_kpi_cache(key: str, domain: str, domain_label: str,
+                     domain_emoji: str, kpis: list,
+                     role_kpi_map: dict | None = None) -> None:
+    from datetime import datetime as _dt
+    cache      = _read_kpi_cache()
+    entry      = cache.get(key, {})   # preserve any existing fields
+    entry.update({
+        "domain":        domain,
+        "domain_label":  domain_label,
+        "domain_emoji":  domain_emoji,
+        "generated_at":  _dt.now().isoformat(),
+        "kpis":          kpis,
+    })
+    if role_kpi_map is not None:
+        entry["role_kpi_map"] = role_kpi_map
+    cache[key] = entry
+    try:
+        (_ROOT / "aria_kpi_cache.json").write_text(
+            json.dumps(cache, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _validate_kpis_against_df(kpis_raw: list, df: pd.DataFrame) -> list:
+    """Drop any KPI whose required columns don't exist in df."""
+    valid_cols = set(df.columns.tolist())
+    out = []
+    for k in kpis_raw:
+        if k.get("agg") == "ratio":
+            if k.get("num_col") not in valid_cols or k.get("den_col") not in valid_cols:
+                continue
+            k.setdefault("column", k["num_col"])
+        else:
+            if k.get("column") not in valid_cols:
+                continue
+        k.setdefault("suggested_name", k.get("name", k.get("column", "KPI")))
+        k.setdefault("user_name",      k["suggested_name"])
+        k.setdefault("enabled",        True)
+        k.setdefault("kpi_type",       "direct")
+        out.append(k)
+    return out
+
+
+def _build_kpi_prompt(df: pd.DataFrame) -> str:
+    col_types = {c: str(df[c].dtype) for c in df.columns}
+    sample    = df.head(8).to_dict(orient="records")
+    return f"""You are a senior data analyst and KPI expert working with business leadership teams.
+
+Analyse this dataset and suggest the most impactful KPIs for executive reporting.
+
+DATASET COLUMNS AND TYPES:
+{json.dumps(col_types, indent=2)}
+
+SAMPLE DATA (first 8 rows):
+{json.dumps(sample, indent=2, default=str)}
+
+INSTRUCTIONS:
+1. Identify the precise business domain (e.g. Quick Service Restaurant, Airlines & Aviation, Retail & E-Commerce, Banking & Finance, etc.)
+2. Suggest 8 to 12 KPIs that a C-Suite or senior leadership team would track for this domain
+3. ONLY include KPIs whose required source column(s) EXIST in this dataset — do not invent columns
+4. For ratio/derived KPIs both num_col and den_col must be present in the dataset
+5. Be specific to the domain: e.g. for airlines include Load Factor%, On-Time Performance%, Revenue per Passenger; for QSR include Drive-Thru Speed, Avg Service Time, Channel Mix %
+
+Return ONLY valid JSON — no markdown fences, no explanation text — in this exact schema:
+{{
+  "domain": "short_snake_case_domain_id",
+  "domain_label": "Human Readable Domain Label",
+  "domain_emoji": "single emoji",
+  "kpis": [
+    {{
+      "name": "KPI display name",
+      "column": "exact column name from dataset (for direct KPIs)",
+      "agg": "sum | mean | nunique | ratio",
+      "format": "currency | integer | percent | decimal | minutes | score",
+      "formula": "human-readable formula e.g. SUM(Revenue (EUR))",
+      "description": "one-line business description of what this measures and why it matters",
+      "kpi_type": "direct | derived",
+      "num_col": "numerator column name (ratio KPIs only, else omit)",
+      "den_col": "denominator column name (ratio KPIs only, else omit)",
+      "den_agg": "sum | nunique (ratio KPIs only, else omit)"
+    }}
+  ]
+}}"""
+
+
+def _call_gemini_for_kpis(prompt: str) -> dict | None:
+    """Call Gemini 2.5 Flash. Returns parsed JSON dict or None on failure."""
+    api_key = st.session_state.get("gemini_key") or st.session_state.get("gemini_key_input")
+    if not api_key:
+        return None
+    try:
+        import google.generativeai as genai  # type: ignore
+        genai.configure(api_key=api_key)
+        model  = genai.GenerativeModel("gemini-2.5-flash")
+        resp   = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1, max_output_tokens=4096
+            ),
+        )
+        raw = resp.text.strip()
+        # Strip accidental markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _call_openrouter_for_kpis(prompt: str) -> dict | None:
+    """Fallback: call a free OpenRouter model for KPI detection."""
+    try:
+        import requests as _req
+        headers = {
+            "Authorization": "Bearer sk-or-v1-free",   # OpenRouter free tier
+            "Content-Type":  "application/json",
+            "HTTP-Referer":  "https://aria-wizard.streamlit.app",
+            "X-Title":       "ARIA Wizard",
+        }
+        body = {
+            "model":    "mistralai/mistral-7b-instruct:free",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens":  3000,
+        }
+        r = _req.post("https://openrouter.ai/api/v1/chat/completions",
+                      json=body, headers=headers, timeout=30)
+        if r.status_code != 200:
+            return None
+        raw = r.json()["choices"][0]["message"]["content"].strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def detect_kpis_llm(df: pd.DataFrame) -> list:
+    """
+    LLM-powered KPI discovery.
+    1. Check aria_kpi_cache.json by (domain + column fingerprint) — 30-day TTL
+    2. Call Gemini 2.5 Flash
+    3. Fallback: call free OpenRouter model
+    4. Validate all returned KPIs have columns that exist in df
+    Returns list of KPI dicts compatible with the existing wizard UI.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    domain, cache_key = _kpi_cache_key(df)
+
+    # ── 1. Cache check ────────────────────────────────────────────────────── #
+    cache = _read_kpi_cache()
+    if cache_key in cache:
+        entry = cache[cache_key]
+        try:
+            age = _dt.now() - _dt.fromisoformat(entry["generated_at"])
+            if age < _td(days=30):
+                # Restore domain metadata + role map to session state
+                st.session_state.detected_domain       = entry["domain"]
+                st.session_state.detected_domain_label = entry.get("domain_label", entry["domain"])
+                st.session_state.detected_domain_emoji = entry.get("domain_emoji", "📊")
+                if "role_kpi_map" in entry:
+                    st.session_state.role_kpi_map = entry["role_kpi_map"]
+                return entry["kpis"]
+        except Exception:
+            pass
+
+    # ── 2. Build prompt ───────────────────────────────────────────────────── #
+    prompt = _build_kpi_prompt(df)
+
+    # ── 3. Try Gemini ─────────────────────────────────────────────────────── #
+    result = _call_gemini_for_kpis(prompt)
+
+    # ── 4. Fallback to free LLM ───────────────────────────────────────────── #
+    if result is None:
+        result = _call_openrouter_for_kpis(prompt)
+
+    # ── 5. If both failed, return empty so UI shows a retry prompt ─────────── #
+    if result is None:
+        return []
+
+    # ── 6. Validate columns ───────────────────────────────────────────────── #
+    kpis = _validate_kpis_against_df(result.get("kpis", []), df)
+
+    # ── 7. Store domain metadata ──────────────────────────────────────────── #
+    d_label = result.get("domain_label", domain)
+    d_emoji = result.get("domain_emoji", "📊")
+    st.session_state.detected_domain       = result.get("domain", domain)
+    st.session_state.detected_domain_label = d_label
+    st.session_state.detected_domain_emoji = d_emoji
+
+    # ── 8. Write cache ────────────────────────────────────────────────────── #
+    _write_kpi_cache(cache_key, result.get("domain", domain), d_label, d_emoji, kpis)
+
+    return kpis
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ROLE → KPI ASSIGNMENT  (Gemini second pass → tier-rule fallback)
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Role metadata for the assignment prompt
+_ROLE_TIERS = {
+    "CEO":              ("c_suite",    "Strategic, board-level. Revenue growth, margin health, risk."),
+    "CFO":              ("c_suite",    "Financial precision. Profit, margin, cost discipline."),
+    "COO":              ("operations", "Operational efficiency. Order volume, fulfilment, throughput."),
+    "CTO":              ("c_suite",    "Systems and data quality. Process reliability, anomalies."),
+    "VP":               ("leadership", "Cross-functional. Growth and efficiency balance."),
+    "Director":         ("leadership", "Execution focus. Weekly priorities and team actions."),
+    "Sales Head":       ("commercial", "Revenue momentum. Deal activity, pipeline, regions."),
+    "Operations Head":  ("operations", "Throughput, on-time delivery, shipping performance."),
+    "Senior Manager":   ("management", "Team-level product and segment detail."),
+    "Manager":          ("management", "Ground-level daily activity and task completion."),
+    "Team Lead":        ("management", "Granular operational, today-focused, specific SKUs."),
+    "Business Analyst": ("management", "Data-driven. Anomaly detection, trend breaks, root cause."),
+}
+
+# Tier → keyword preferences for the rule-based fallback
+_TIER_KEYWORDS: dict[str, list[str]] = {
+    "c_suite":    ["revenue", "profit", "margin", "income", "return", "ebit", "growth",
+                   "sales", "load factor", "yield"],
+    "leadership": ["revenue", "profit", "orders", "load", "volume", "passengers",
+                   "bookings", "sales", "margin"],
+    "commercial": ["revenue", "sales", "orders", "aov", "conversion", "bookings",
+                   "passengers", "ticket", "yield"],
+    "operations": ["time", "delay", "on-time", "on_time", "throughput", "quantity",
+                   "utilization", "performance", "service", "fulfilment", "defect",
+                   "downtime", "speed", "efficiency", "rpk", "ask"],
+    "management": ["quantity", "orders", "transactions", "customers", "units",
+                   "on-time", "delay", "service time", "passengers", "bookings"],
+}
+
+
+def _assign_kpis_to_roles_fallback(kpis: list) -> dict:
+    """
+    Rule-based tier assignment — no API call needed.
+    Scores each KPI against tier keyword lists, picks top 4 per role.
+    """
+    kpi_names = [k["user_name"] for k in kpis if k.get("enabled", True)]
+    if not kpi_names:
+        return {}
+
+    def _score(kpi_name: str, keywords: list[str]) -> int:
+        n = kpi_name.lower()
+        return sum(1 for kw in keywords if kw in n)
+
+    result: dict = {}
+    for role, (tier, _) in _ROLE_TIERS.items():
+        keywords = _TIER_KEYWORDS.get(tier, [])
+        scored   = sorted(kpi_names,
+                          key=lambda n: _score(n, keywords),
+                          reverse=True)
+        # Always fill up to 4; append remaining KPIs if not enough strong matches
+        assigned = scored[:4]
+        for extra in kpi_names:
+            if len(assigned) >= 4:
+                break
+            if extra not in assigned:
+                assigned.append(extra)
+        result[role] = assigned[:4]
+    return result
+
+
+def _assign_kpis_to_roles_gemini(kpis: list, domain_label: str) -> dict | None:
+    """
+    Second Gemini call: assign 4 KPIs per role.
+    Returns dict {role_name: [kpi_name, ...]} or None on failure.
+    """
+    api_key = st.session_state.get("gemini_key") or st.session_state.get("gemini_key_input")
+    if not api_key:
+        return None
+
+    enabled_kpis = [k for k in kpis if k.get("enabled", True)]
+    kpi_summary  = "\n".join(
+        f'- "{k["user_name"]}": {k.get("description", "")}' for k in enabled_kpis
+    )
+    role_lines   = "\n".join(
+        f'- {role}: ({tier}) {desc}' for role, (tier, desc) in _ROLE_TIERS.items()
+    )
+
+    prompt = f"""You are an expert in data analytics and executive reporting for the {domain_label} industry.
+
+The following KPIs have been detected in the dataset:
+{kpi_summary}
+
+Assign the 4 most relevant KPIs to each business role below. Consider each role's tier, priorities and what they would track daily.
+
+Roles:
+{role_lines}
+
+Rules:
+1. Use ONLY KPI names from the list above — exact spelling
+2. Assign exactly 4 KPIs per role
+3. First KPI in each list = the primary / hero KPI for that role
+4. Different roles should have different primary KPIs where possible
+
+Return ONLY valid JSON — no markdown, no explanation:
+{{
+  "CEO": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "CFO": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "COO": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "CTO": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "VP": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Director": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Sales Head": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Operations Head": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Senior Manager": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Manager": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Team Lead": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Business Analyst": ["kpi1", "kpi2", "kpi3", "kpi4"]
+}}"""
+
+    try:
+        import google.generativeai as genai  # type: ignore
+        genai.configure(api_key=api_key)
+        model  = genai.GenerativeModel("gemini-2.5-flash")
+        resp   = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1, max_output_tokens=2048
+            ),
+        )
+        raw = resp.text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.rsplit("```", 1)[0].strip()
+        mapping = json.loads(raw)
+        # Validate: only keep KPI names that exist in our detected list
+        valid = {k["user_name"] for k in enabled_kpis}
+        for role in mapping:
+            mapping[role] = [n for n in mapping[role] if n in valid][:4]
+        return mapping
+    except Exception:
+        return None
+
+
+def assign_kpis_to_roles(kpis: list, domain_label: str, cache_key: str) -> dict:
+    """
+    Orchestrator:
+    1. Return cached role_kpi_map if present in aria_kpi_cache.json
+    2. Try Gemini assignment
+    3. Fall back to rule-based tier assignment
+    4. Write result back to cache (same entry as KPI list)
+    """
+    # ── 1. Check cache ────────────────────────────────────────────────────── #
+    cache = _read_kpi_cache()
+    if cache_key in cache and "role_kpi_map" in cache[cache_key]:
+        return cache[cache_key]["role_kpi_map"]
+
+    # ── 2. Try Gemini ─────────────────────────────────────────────────────── #
+    mapping = _assign_kpis_to_roles_gemini(kpis, domain_label)
+
+    # ── 3. Fallback ───────────────────────────────────────────────────────── #
+    if not mapping:
+        mapping = _assign_kpis_to_roles_fallback(kpis)
+
+    # ── 4. Write to cache (alongside existing KPI entry) ─────────────────── #
+    if cache_key in cache:
+        entry = cache[cache_key]
+        _write_kpi_cache(
+            cache_key,
+            entry.get("domain", ""),
+            entry.get("domain_label", ""),
+            entry.get("domain_emoji", "📊"),
+            entry.get("kpis", kpis),
+            role_kpi_map=mapping,
+        )
+
+    return mapping
+
+
 def detect_date_col(df: pd.DataFrame) -> str | None:
     for col in df.columns:
         if "datetime" in str(df[col].dtype):
@@ -2304,6 +2706,13 @@ def _clear_preview():
         st.session_state.pop(k, None)
 
 
+def _clear_kpi_cache():
+    """Wipe KPI discovery state so Step 4 re-runs LLM detection on new data."""
+    for k in ("kpis", "detected_domain", "detected_domain_label",
+              "detected_domain_emoji", "date_col", "role_kpi_map"):
+        st.session_state.pop(k, None)
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # STEP 1 — WELCOME
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2443,6 +2852,7 @@ def step_upload_data():
                 st.session_state.data_source = "file"
                 st.session_state.data_name   = uploaded.name
                 _clear_preview()
+                _clear_kpi_cache()
                 st.success(f"✅ Loaded {len(df):,} rows × {len(df.columns)} columns from **{uploaded.name}**")
                 st.dataframe(df.head(5), use_container_width=True)
             except Exception as e:
@@ -2466,6 +2876,7 @@ def step_upload_data():
                     st.session_state.data_source      = "google_sheets"
                     st.session_state.google_sheet_url = url
                     _clear_preview()
+                    _clear_kpi_cache()
                     st.success(f"✅ Loaded {len(df):,} rows from Google Sheets")
                     st.dataframe(df.head(5), use_container_width=True)
                 except Exception as e:
@@ -2483,6 +2894,7 @@ def step_upload_data():
                 st.session_state.data_source      = "google_sheets"
                 st.session_state.google_sheet_url = _sample_url
                 st.session_state.data_name        = "Superstore Live (Google Sheets)"
+                _clear_kpi_cache()
                 _clear_preview()
                 st.success(f"✅ Loaded {len(df):,} rows from Superstore Live")
                 st.rerun()
@@ -2499,7 +2911,7 @@ def step_upload_data():
 
 def step_discover_kpis():
     st.header("🔬 Discover KPIs")
-    st.caption("ARIA analysed your dataset and suggested smart KPI definitions. Review, rename, or disable each one.")
+    st.caption("Gemini 2.5 Flash analysed your dataset and generated domain-specific KPIs. Review, rename, or disable each one.")
 
     df: pd.DataFrame = st.session_state.get("df")
     if df is None:
@@ -2510,11 +2922,40 @@ def step_discover_kpis():
     if "date_col" not in st.session_state:
         st.session_state.date_col = detect_date_col(df)
 
+    # ── LLM KPI detection (runs once per dataset, cached) ────────────────── #
+    if "kpis" not in st.session_state:
+        provider = st.session_state.get("ai_provider", "stub")
+        gemini_key_present = bool(
+            st.session_state.get("gemini_key") or
+            st.session_state.get("gemini_key_input")
+        )
+        if provider == "gemini" and gemini_key_present:
+            with st.spinner("🧠 ARIA is analysing your dataset with Gemini 2.5 Flash…"):
+                st.session_state.kpis = detect_kpis_llm(df)
+        elif provider == "stub":
+            # Stub selected — try Gemini anyway if key exists, else free LLM
+            with st.spinner("🧠 ARIA is analysing your dataset…"):
+                st.session_state.kpis = detect_kpis_llm(df)
+        else:
+            with st.spinner("🧠 ARIA is analysing your dataset…"):
+                st.session_state.kpis = detect_kpis_llm(df)
+
+    # ── Role KPI assignment (runs once after KPI detection, cached) ──────── #
+    if "role_kpi_map" not in st.session_state and st.session_state.get("kpis"):
+        _, cache_key = _kpi_cache_key(df)
+        d_label_for_assign = st.session_state.get(
+            "detected_domain_label",
+            st.session_state.get("detected_domain", "Business")
+        )
+        with st.spinner("🎯 Assigning KPIs to roles…"):
+            st.session_state.role_kpi_map = assign_kpis_to_roles(
+                st.session_state.kpis, d_label_for_assign, cache_key
+            )
+
     # ── Domain badge ─────────────────────────────────────────────────────── #
-    if "detected_domain" not in st.session_state:
-        st.session_state.detected_domain = detect_domain(df)
-    domain = st.session_state.detected_domain
-    d_emoji, d_label = _DOMAIN_META.get(domain, ("📊", "Business Analytics"))
+    d_emoji = st.session_state.get("detected_domain_emoji", "📊")
+    d_label = st.session_state.get("detected_domain_label",
+              st.session_state.get("detected_domain", "Business Analytics"))
     st.markdown(
         f'<div style="display:inline-flex;align-items:center;gap:8px;'
         f'background:#1F2937;border:1px solid #374151;border-radius:20px;'
@@ -2526,6 +2967,8 @@ def step_discover_kpis():
         unsafe_allow_html=True,
     )
 
+    if "date_col" not in st.session_state:
+        st.session_state.date_col = detect_date_col(df)
     st.session_state.date_col = st.selectbox(
         "📅 Date / time column",
         options=df.columns.tolist(),
@@ -2537,12 +2980,14 @@ def step_discover_kpis():
 
     st.divider()
 
-    if "kpis" not in st.session_state:
-        st.session_state.kpis = detect_kpis(df)
-
-    kpis = st.session_state.kpis
+    kpis = st.session_state.get("kpis", [])
     if not kpis:
-        st.warning("ARIA couldn't auto-detect KPIs. Add them manually below.")
+        st.warning("⚠️ ARIA could not generate KPIs. This can happen if both Gemini and the fallback LLM are unavailable, or the dataset has no numeric columns.")
+        if st.button("🔄 Retry KPI Detection"):
+            _clear_kpi_cache()
+            st.rerun()
+        nav_buttons(back=True, next_label="Next →", next_disabled=True)
+        return
     else:
         # ── KPI type legend ──────────────────────────────────────────────── #
         st.markdown(
@@ -2557,7 +3002,7 @@ def step_discover_kpis():
             unsafe_allow_html=True,
         )
 
-        st.subheader(f"ARIA's KPI Suggestions  ({len(kpis)} found)")
+        st.subheader(f"ARIA's AI-Generated KPIs  ({len(kpis)} found)")
         h1, h2, h3, h4, h5 = st.columns([0.4, 1.8, 0.8, 2.2, 3])
         h1.caption("On")
         h2.caption("KPI Name")
@@ -2628,6 +3073,12 @@ def step_pick_role():
     if "role_name" not in st.session_state:
         st.session_state.role_name = "CEO"
 
+    # Role-specific KPI map from Gemini assignment (or fallback)
+    _role_kpi_map = st.session_state.get("role_kpi_map", {})
+    # Flat fallback list if map is empty
+    _flat_kpis    = [k["user_name"] for k in st.session_state.get("kpis", [])
+                     if k.get("enabled")] or ["—"]
+
     for group_name, roles in ROLE_GROUPS.items():
         st.subheader(group_name)
         role_items = list(roles.items())
@@ -2646,7 +3097,7 @@ def step_pick_role():
                     f'<div style="font-weight:700;font-size:13px;margin-bottom:3px">{role_key}</div>'
                     f'<div style="font-size:11px;color:#9CA3AF;margin-bottom:6px">{rd["title"]}</div>'
                     f'<div style="font-size:10px;color:{rd["accent_color"]}">'
-                    f'{"  ·  ".join(rd["kpis"][:3])}</div></div>',
+                    f'{"  ·  ".join((_role_kpi_map.get(role_key) or _flat_kpis)[:3])}</div></div>',
                     unsafe_allow_html=True,
                 )
                 if col.button("✓ Selected" if is_sel else "Select",
@@ -2755,7 +3206,7 @@ def step_choose_ai():
     )
     _next_disabled   = _gemini_selected and not _gemini_key_ok
 
-    nav_buttons(back=True, next_label="Next: Preview Card →", next_disabled=_next_disabled)
+    nav_buttons(back=True, next_label="Next: Discover KPIs →", next_disabled=_next_disabled)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -3185,12 +3636,21 @@ def _build_configs() -> tuple[str, str]:
         },
     }
 
+    # Use role-specific KPI assignment from Gemini; fall back to first 4 detected KPIs
+    _role_map     = st.session_state.get("role_kpi_map", {})
+    llm_kpi_names = [k["user_name"] for k in kpis_cfg] if kpis_cfg else []
+    role_kpis     = (_role_map.get(role_name)
+                     or llm_kpi_names[:4]
+                     or role_cfg.get("kpis", ["Sales"]))
+    primary_kpi   = (role_kpis[0] if role_kpis
+                     else role_cfg.get("primary_kpi", "Sales"))
+
     roles = {"roles": {role_name: {
         "title":         role_cfg["title"],
         "badge":         role_cfg["badge"],
         "slack_channel": slack_channel,
-        "primary_kpi":   role_cfg["primary_kpi"],
-        "kpis":          role_cfg["kpis"],
+        "primary_kpi":   primary_kpi,
+        "kpis":          role_kpis,
         "accent_color":  eff_accent,
         "driver_focus":  role_cfg.get("driver_focus", ["Category", "Region"]),
         "tone":          role_cfg["tone"],
@@ -3856,9 +4316,9 @@ def main():
     step = st.session_state.step
     if   step == 1: step_welcome()
     elif step == 2: step_upload_data()
-    elif step == 3: step_discover_kpis()
-    elif step == 4: step_pick_role()
-    elif step == 5: step_choose_ai()
+    elif step == 3: step_choose_ai()
+    elif step == 4: step_discover_kpis()
+    elif step == 5: step_pick_role()
     elif step == 6: step_preview_card()
     elif step == 7: step_set_delivery()
     elif step == 8: step_export_go()
