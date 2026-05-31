@@ -95,8 +95,8 @@ st.set_page_config(
 
 TOTAL_STEPS = 8
 STEP_LABELS = [
-    "Welcome", "Upload Data", "Discover KPIs", "Pick Role",
-    "Choose AI", "Preview Card", "Set Delivery", "Go Live",
+    "Welcome", "Upload Data", "Choose AI", "Discover KPIs",
+    "Pick Role", "Preview Card", "Set Delivery", "Go Live",
 ]
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -1674,6 +1674,7 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
     """Call Gemini 2.5 Flash. Returns parsed JSON dict or None on failure."""
     api_key = st.session_state.get("gemini_key") or st.session_state.get("gemini_key_input")
     if not api_key:
+        st.session_state["_kpi_llm_error"] = "No Gemini API key found. Please go back to Step 3 and enter your key."
         return None
     try:
         import google.generativeai as genai  # type: ignore
@@ -1692,8 +1693,11 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
             if raw.startswith("json"):
                 raw = raw[4:]
             raw = raw.rsplit("```", 1)[0].strip()
-        return json.loads(raw)
-    except Exception:
+        result = json.loads(raw)
+        st.session_state.pop("_kpi_llm_error", None)   # clear any previous error
+        return result
+    except Exception as e:
+        st.session_state["_kpi_llm_error"] = f"Gemini error: {type(e).__name__}: {str(e)[:200]}"
         return None
 
 
@@ -1768,9 +1772,17 @@ def detect_kpis_llm(df: pd.DataFrame) -> list:
     if result is None:
         result = _call_openrouter_for_kpis(prompt)
 
-    # ── 5. If both failed, return empty so UI shows a retry prompt ─────────── #
+    # ── 5. If both LLMs failed, fall back to built-in pattern engine ─────────── #
     if result is None:
-        return []
+        st.session_state["_kpi_used_fallback"] = True
+        fallback = detect_kpis(df)
+        # Still set a basic domain from the regex detector
+        domain_fb = detect_domain(df)
+        d_emoji_fb, d_label_fb = _DOMAIN_META.get(domain_fb, ("📊", "Business Analytics"))
+        st.session_state.detected_domain       = domain_fb
+        st.session_state.detected_domain_label = d_label_fb
+        st.session_state.detected_domain_emoji = d_emoji_fb
+        return fallback
 
     # ── 6. Validate columns ───────────────────────────────────────────────── #
     kpis = _validate_kpis_against_df(result.get("kpis", []), df)
@@ -2710,7 +2722,8 @@ def _clear_preview():
 def _clear_kpi_cache():
     """Wipe KPI discovery state so Step 4 re-runs LLM detection on new data."""
     for k in ("kpis", "detected_domain", "detected_domain_label",
-              "detected_domain_emoji", "date_col", "role_kpi_map"):
+              "detected_domain_emoji", "date_col", "role_kpi_map",
+              "_kpi_llm_error", "_kpi_used_fallback"):
         st.session_state.pop(k, None)
 
 
@@ -2981,11 +2994,20 @@ def step_discover_kpis():
 
     st.divider()
 
+    # ── Show LLM error / fallback notice if applicable ───────────────────── #
+    llm_err = st.session_state.get("_kpi_llm_error")
+    if llm_err:
+        st.warning(f"⚠️ Gemini could not be reached — {llm_err}")
+    if st.session_state.get("_kpi_used_fallback"):
+        st.info("ℹ️ Gemini was unavailable — KPIs were detected using the built-in pattern engine. Go back to Step 3 and verify your API key to use Gemini.")
+
     kpis = st.session_state.get("kpis", [])
     if not kpis:
         st.warning("⚠️ ARIA could not generate KPIs. This can happen if both Gemini and the fallback LLM are unavailable, or the dataset has no numeric columns.")
         if st.button("🔄 Retry KPI Detection"):
             _clear_kpi_cache()
+            st.session_state.pop("_kpi_llm_error", None)
+            st.session_state.pop("_kpi_used_fallback", None)
             st.rerun()
         nav_buttons(back=True, next_label="Next →", next_disabled=True)
         return
