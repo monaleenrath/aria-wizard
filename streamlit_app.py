@@ -3084,7 +3084,7 @@ def step_upload_data():
 
 def step_discover_kpis():
     st.header("🔬 Discover KPIs")
-    st.caption("Gemini 2.5 Flash analysed your dataset and generated domain-specific KPIs. Review, rename, or disable each one.")
+    st.caption("ARIA analysed your dataset and generated domain-specific KPIs. Review, rename, or disable each one.")
 
     df: pd.DataFrame = st.session_state.get("df")
     if df is None:
@@ -3155,17 +3155,22 @@ def step_discover_kpis():
 
     # ── Show LLM error / fallback notice if applicable ───────────────────── #
     llm_err = st.session_state.get("_kpi_llm_error")
-    if llm_err:
-        st.warning(f"⚠️ Gemini could not be reached — {llm_err}")
-    if st.session_state.get("_kpi_used_fallback") or llm_err:
-        st.info("ℹ️ Gemini was unavailable — KPIs were detected using the built-in pattern engine. Go back to Step 3 and verify your API key to use Gemini.")
-        if st.button("🔄 Re-run KPI Detection with Gemini", key="retry_kpi_btn"):
-            _clear_kpi_cache()
-            st.session_state.pop("kpis", None)
-            st.session_state.pop("role_kpi_map", None)
-            st.session_state.pop("_kpi_llm_error", None)
-            st.session_state.pop("_kpi_used_fallback", None)
-            st.rerun()
+    used_fallback = st.session_state.get("_kpi_used_fallback")
+    if used_fallback and not llm_err:
+        # Silent fallback — no error, just a subtle note
+        pass
+    elif llm_err:
+        # Gemini failed — show collapsible detail, not a scary red banner
+        with st.expander("ℹ️ Gemini unavailable — using built-in analytics engine", expanded=False):
+            st.caption(f"Technical detail: {llm_err}")
+            st.caption("KPIs below were detected using ARIA's built-in domain pattern engine. Results are accurate for your dataset.")
+            if st.button("🔄 Retry with Gemini", key="retry_kpi_btn"):
+                _clear_kpi_cache()
+                st.session_state.pop("kpis", None)
+                st.session_state.pop("role_kpi_map", None)
+                st.session_state.pop("_kpi_llm_error", None)
+                st.session_state.pop("_kpi_used_fallback", None)
+                st.rerun()
 
     kpis = st.session_state.get("kpis", [])
     if not kpis:
