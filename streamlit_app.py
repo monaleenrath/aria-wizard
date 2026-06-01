@@ -1716,18 +1716,19 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
         st.session_state["_kpi_llm_error"] = "No Gemini API key found. Please go back to Step 3 and enter your key."
         return None
     try:
-        import google.generativeai as genai  # type: ignore
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        resp  = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
+        from google import genai as _genai          # newer google-genai SDK
+        from google.genai import types as _gtypes
+        client = _genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=_gtypes.GenerateContentConfig(
                 temperature=0.1,
                 max_output_tokens=4096,
-                response_mime_type="application/json",   # force valid JSON output
+                response_mime_type="application/json",  # strict JSON output
             ),
         )
-        result = _robust_json_parse(resp.text.strip())
+        result = json.loads(resp.text)              # new SDK always returns valid JSON
         st.session_state.pop("_kpi_llm_error", None)
         return result
     except Exception as e:
@@ -1950,18 +1951,19 @@ Return ONLY valid JSON — no markdown, no explanation:
 }}"""
 
     try:
-        import google.generativeai as genai  # type: ignore
-        genai.configure(api_key=api_key)
-        model  = genai.GenerativeModel("gemini-2.5-flash")
-        resp   = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
+        from google import genai as _genai
+        from google.genai import types as _gtypes
+        client = _genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=_gtypes.GenerateContentConfig(
                 temperature=0.1,
                 max_output_tokens=2048,
                 response_mime_type="application/json",
             ),
         )
-        mapping = _robust_json_parse(resp.text.strip())
+        mapping = json.loads(resp.text)
         # Validate: only keep KPI names that exist in our detected list
         valid = {k["user_name"] for k in enabled_kpis}
         for role in mapping:
