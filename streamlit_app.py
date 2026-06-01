@@ -1719,7 +1719,7 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
         import requests as _rq
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.0-flash:generateContent?key={api_key}"
+            f"gemini-1.5-flash:generateContent?key={api_key}"
         )
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -1961,7 +1961,7 @@ Return ONLY valid JSON — no markdown, no explanation:
         import requests as _rq
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.0-flash:generateContent?key={api_key}"
+            f"gemini-1.5-flash:generateContent?key={api_key}"
         )
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
