@@ -823,10 +823,17 @@ def screen_auth():
         pass
 
     st.markdown("""
-    <div style="text-align:center;padding:4px 0 8px">
-      <div style="font-size:52px;margin-bottom:6px">⚡</div>
-      <h1 style="font-size:30px;font-weight:800;margin:0">ARIA</h1>
-      <p style="font-size:14px;color:#9CA3AF;margin:6px 0 0">
+    <style>
+      /* Hide Streamlit's default top toolbar lines */
+      header[data-testid="stHeader"] { display: none !important; }
+      #MainMenu { display: none !important; }
+      footer { display: none !important; }
+      .block-container { padding-top: 2rem !important; }
+    </style>
+    <div style="text-align:center;padding:24px 0 12px">
+      <div style="font-size:56px;margin-bottom:8px">⚡</div>
+      <h1 style="font-size:52px;font-weight:900;letter-spacing:6px;margin:0;color:#FFFFFF">ARIA</h1>
+      <p style="font-size:14px;color:#9CA3AF;margin:8px 0 0;letter-spacing:1px">
         Autonomous Report &amp; Insight AI Agent
       </p>
     </div>
@@ -3019,11 +3026,25 @@ def step_upload_data():
         uploaded = st.file_uploader("Drop your file here", type=["xlsx", "xls", "csv"])
         if uploaded:
             try:
-                df = pd.read_csv(uploaded) if uploaded.name.endswith(".csv") \
-                     else pd.read_excel(uploaded)
-                st.session_state.df          = df
-                st.session_state.data_source = "file"
-                st.session_state.data_name   = uploaded.name
+                # Store raw bytes for Step 8 GitHub push (binary-safe)
+                _raw_bytes = uploaded.getvalue()
+                if uploaded.name.endswith(".csv"):
+                    df = pd.read_csv(uploaded)
+                    _sheet_name = "Sheet1"
+                else:
+                    import openpyxl as _oxl
+                    _wb = _oxl.load_workbook(
+                        __import__("io").BytesIO(_raw_bytes), read_only=True)
+                    _sheet_name = _wb.sheetnames[0] if _wb.sheetnames else "Sheet1"
+                    _wb.close()
+                    df = pd.read_excel(
+                        __import__("io").BytesIO(_raw_bytes),
+                        sheet_name=_sheet_name)
+                st.session_state.df                  = df
+                st.session_state.data_source         = "file"
+                st.session_state.data_name           = uploaded.name
+                st.session_state.uploaded_file_bytes = _raw_bytes
+                st.session_state.excel_sheet_name    = _sheet_name
                 _clear_preview()
                 _clear_kpi_cache()
                 st.success(f"✅ Loaded {len(df):,} rows × {len(df.columns)} columns from **{uploaded.name}**")
@@ -3570,50 +3591,105 @@ def step_preview_card():
 
     # ── Timeframe question — user must actively choose ─────────────────────── #
     st.subheader("2. What time period should this card cover?")
-    role_now      = st.session_state.get("role_name", "")
+    role_now       = st.session_state.get("role_name", "")
     role_suggested = ROLE_TIMEFRAME_DEFAULTS.get(role_now, "")
-    current_tf    = st.session_state.get("timeframe_key")   # None = not yet chosen
+    current_tf     = st.session_state.get("timeframe_key")   # None = not yet chosen
+
+    # ── Compute which timeframes are valid based on data's max date ───────── #
+    _df_preview  = st.session_state.get("df")
+    _date_col_p  = st.session_state.get("date_col")
+    _today       = date.today()
+    _max_data_dt = None
+    _data_gap_days = 0
+
+    if _df_preview is not None and _date_col_p and _date_col_p in _df_preview.columns:
+        try:
+            _max_data_dt   = pd.to_datetime(_df_preview[_date_col_p], errors="coerce").dt.date.max()
+            _data_gap_days = (_today - _max_data_dt).days
+        except Exception:
+            _max_data_dt = None
+
+    def _tf_available(tf: dict) -> bool:
+        """True if the data has enough history to support this timeframe."""
+        if _max_data_dt is None:
+            return True  # no df yet — don't block anything
+        key = tf["key"]
+        if key in ("alltime", "ytd"):
+            return True
+        days_needed = tf.get("days", 1)
+        # Need at least 'days_needed' days of data before max_date
+        _dmin = pd.to_datetime(_df_preview[_date_col_p], errors="coerce").dt.date.min()
+        return (_max_data_dt - _dmin).days >= days_needed
+
+    # Show data staleness banner when data is not current
+    if _max_data_dt is not None and _data_gap_days > 1:
+        st.info(
+            f"📅 Your data goes up to **{_max_data_dt.strftime('%b %d, %Y')}** "
+            f"({_data_gap_days} days ago). "
+            f"Timeframes that need more recent data are disabled. "
+            f"The preview will reflect the most recent period available in your file.",
+            icon="ℹ️",
+        )
+
+    # Auto-select best valid timeframe if none chosen yet
+    if not current_tf and _max_data_dt is not None:
+        # Pick the role-suggested tf if valid, else fall back down the list
+        _candidates = (
+            [role_suggested] if role_suggested else []
+        ) + [tf["key"] for tf in TIMEFRAME_OPTIONS]
+        for _cand in _candidates:
+            _cand_tf = _tf_by_key(_cand)
+            if _tf_available(_cand_tf):
+                st.session_state.timeframe_key = _cand
+                current_tf = _cand
+                break
 
     # Build 4-column rows of option cards
     _tf_rows = [TIMEFRAME_OPTIONS[i:i+4] for i in range(0, len(TIMEFRAME_OPTIONS), 4)]
     for row_opts in _tf_rows:
         cols = st.columns(len(row_opts))
         for col, tf in zip(cols, row_opts):
-            is_sel     = current_tf == tf["key"]
-            is_suggest = (role_suggested == tf["key"])
-            border_col = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest else "#374151")
-            bg_col     = "#1C2A1A" if is_sel else ("#1A2233" if is_suggest else "#111827")
-            label_col  = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest else "#D1D5DB")
-            badge_html = (
+            is_sel      = current_tf == tf["key"]
+            is_suggest  = (role_suggested == tf["key"])
+            is_disabled = not _tf_available(tf)
+            border_col  = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_disabled else ("#374151" if not is_disabled else "#1F2937"))
+            bg_col      = "#1C2A1A" if is_sel else ("#1A2233" if is_suggest and not is_disabled else ("#111827" if not is_disabled else "#0D1117"))
+            label_col   = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_disabled else ("#D1D5DB" if not is_disabled else "#374151"))
+            desc_col    = "#6B7280" if not is_disabled else "#1F2937"
+            badge_html  = (
                 '<div style="font-size:9px;color:#F59E0B;font-weight:700;'
                 'background:#F59E0B20;border-radius:4px;padding:1px 6px;'
                 'margin-top:4px;display:inline-block">✓ SELECTED</div>'
                 if is_sel else (
+                '<div style="font-size:9px;color:#4B5563;font-weight:700;'
+                'background:#1F293720;border-radius:4px;padding:1px 6px;'
+                'margin-top:4px;display:inline-block">✗ NO DATA</div>'
+                if is_disabled else (
                 '<div style="font-size:9px;color:#60A5FA;font-weight:700;'
                 'background:#60A5FA20;border-radius:4px;padding:1px 6px;'
                 'margin-top:4px;display:inline-block">★ SUGGESTED</div>'
-                if is_suggest else "")
+                if is_suggest else ""))
             )
             col.markdown(
                 f'<div style="background:{bg_col};border:2px solid {border_col};'
                 f'border-radius:12px;padding:14px 12px;height:148px;'
                 f'box-sizing:border-box;overflow:hidden;display:flex;'
                 f'flex-direction:column;justify-content:flex-start;'
-                f'margin-bottom:8px">'
+                f'margin-bottom:8px;{"opacity:0.4;" if is_disabled else ""}">'
                 f'<div style="font-size:22px;font-weight:900;color:{label_col};'
                 f'letter-spacing:-0.5px;line-height:1">{tf["short"]}</div>'
                 f'<div style="font-size:12px;font-weight:700;color:{label_col};'
                 f'margin-top:3px">{tf["label"]}</div>'
-                f'<div style="font-size:10px;color:#6B7280;margin-top:5px;'
+                f'<div style="font-size:10px;color:{desc_col};margin-top:5px;'
                 f'line-height:1.35;flex:1;overflow:hidden">{tf["desc"]}</div>'
                 f'{badge_html}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
-            btn_label = "✓ Selected" if is_sel else "Select"
+            btn_label = "✓ Selected" if is_sel else ("— No Data" if is_disabled else "Select")
             btn_type  = "primary" if is_sel else "secondary"
             if col.button(btn_label, key=f"tf_{tf['key']}", use_container_width=True,
-                          type=btn_type):
+                          type=btn_type, disabled=is_disabled):
                 if not is_sel:
                     st.session_state.timeframe_key = tf["key"]
                     _clear_preview()
@@ -3772,6 +3848,8 @@ def _build_configs() -> tuple[str, str]:
     tz            = st.session_state.get("timezone", "Asia/Kolkata")
     gs_url        = st.session_state.get("google_sheet_url", "")
     data_source   = st.session_state.get("data_source", "file")
+    data_name     = st.session_state.get("data_name", "Superstore.xls")
+    df            = st.session_state.get("df")
     role_cfg      = _resolve_role()
     role_name     = st.session_state.get("role_name", "CEO")
     slack_channel = st.session_state.get("slack_channel", "")
@@ -3779,37 +3857,74 @@ def _build_configs() -> tuple[str, str]:
     eff_accent    = (CARD_STYLES[style_key].get("accent_override")
                      or role_cfg.get("accent_color", "#F59E0B"))
 
-    # If the wizard session used a local file upload, fall back to the
-    # production Google Sheet URL so GitHub Actions (which has no local file)
-    # can still load data. Read the live sheet URL from the local config.yaml.
-    if not gs_url or data_source != "google_sheets":
-        try:
-            _local_cfg = yaml.safe_load((_ROOT / "config.yaml").read_text())
-            gs_url = _local_cfg.get("data", {}).get("google_sheet_url", gs_url)
-        except Exception:
-            pass
+    # ── Resolve data source ──────────────────────────────────────────────── #
+    # Priority order:
+    #   1. uploaded_file_bytes present → ALWAYS use file, never use Google Sheet URL
+    #   2. data_source == "google_sheets" and no uploaded bytes → use Google Sheet
+    #   3. Fallback — empty config
+    date_col        = st.session_state.get("date_col", "Order Date")
+    _uploaded_bytes = st.session_state.get("uploaded_file_bytes")
+
+    if _uploaded_bytes and data_name:
+        # File was uploaded — this overrides data_source regardless of what it says.
+        # Covers the case where the user clicked "Use Superstore sample" first and
+        # then uploaded their own file in the same session.
+        safe_name  = re.sub(r"[^\w.\-]", "_", data_name)
+        cfg_gs_url = ""
+        cfg_excel  = f"data/{safe_name}"
+        cfg_sheet  = st.session_state.get("excel_sheet_name", "Sheet1")
+
+    elif data_source == "google_sheets" and gs_url and not _uploaded_bytes:
+        # Pure Google Sheets path — no local file uploaded
+        cfg_gs_url = gs_url
+        cfg_excel  = ""
+        cfg_sheet  = "Sheet1"
+
+    else:
+        # Fallback — safe empty config
+        cfg_gs_url = ""
+        _safe_fb   = re.sub(r"[^\w.\-]", "_", data_name) if data_name else ""
+        cfg_excel  = f"data/{_safe_fb}" if _safe_fb else ""
+        cfg_sheet  = st.session_state.get("excel_sheet_name", "Sheet1")
+
+    # ── Auto-detect dimension columns from the actual dataframe ─────────── #
+    if df is not None:
+        kpi_cols = {k.get("column") for k in kpis_cfg}
+        kpi_cols |= {k.get("num_col") for k in kpis_cfg if k.get("num_col")}
+        kpi_cols |= {k.get("den_col") for k in kpis_cfg if k.get("den_col")}
+        date_like = {"date", "time", "year", "month", "quarter", "week", "day"}
+        dim_cols  = [
+            c for c in df.columns
+            if c not in kpi_cols
+            and c != date_col
+            and df[c].dtype == object
+            and not any(d in c.lower() for d in date_like)
+            and df[c].nunique() < 50
+        ][:6]  # cap at 6 dimensions
+    else:
+        dim_cols = ["Category", "Region", "Segment"]
 
     config = {
         "data": {
-            "google_sheet_url": gs_url,
-            "excel_path":       "data/Superstore.xls",
-            "sheet_name":       "Orders",
-            "date_column":      st.session_state.get("date_col", "Order Date"),
+            "google_sheet_url": cfg_gs_url,
+            "excel_path":       cfg_excel,
+            "sheet_name":       cfg_sheet,
+            "date_column":      date_col,
             "timezone":         tz,
             "fallback_to_max_date_if_missing": True,
         },
         "metrics": {
             "kpis": [
-                {"name": k["user_name"], "column": k["column"],
+                {"name": k["user_name"], "column": k.get("column", k["user_name"]),
                  "agg": k["agg"], "format": k["format"]}
                 for k in kpis_cfg
             ],
-            "derived": ["AOV", "Margin%"],
+            "derived": [],
             "anomaly_zscore_threshold": 2.0,
             "anomaly_lookback_days":    90,
         },
         "drivers": {
-            "dimensions": ["Category", "Sub-Category", "Region", "Segment", "Ship Mode"],
+            "dimensions": dim_cols,
             "top_n": 3,
         },
         "llm": {
@@ -4116,15 +4231,51 @@ def step_export_go():
                                    "chore: ARIA wizard config")
             results["config.yaml"] = (ok, m)
 
-            # Merge roles.yaml — fetch existing repo file and add/update THIS role.
-            # This preserves previously-configured roles (CEO, CFO, etc.) instead of
-            # overwriting the file and losing their slack_channel assignments.
-            _merged_roles = _merge_roles_yaml(owner, repo, pat, roles_yaml)
-            ok, m = _gh_push_file(owner, repo, pat, "roles.yaml", _merged_roles,
-                                   f"chore: ARIA wizard — add/update {role_name} role")
+            # Replace roles.yaml entirely — only generate a card for the role
+            # the user selected in Step 4. Merging old roles caused all previously
+            # configured roles to keep running even if the user didn't select them.
+            ok, m = _gh_push_file(owner, repo, pat, "roles.yaml", roles_yaml,
+                                   f"chore: ARIA wizard — set role to {role_name}")
             results["roles.yaml"] = (ok, m)
 
-            # 2b. Push requirements.txt and all agent code
+            # 2b. Push uploaded data file — trigger on uploaded_file_bytes existing,
+            # NOT on data_source, because the user may have started with "Superstore"
+            # and then uploaded their own file (data_source stays "google_sheets").
+            _data_name   = st.session_state.get("data_name", "")
+            _uploaded_file_obj = st.session_state.get("uploaded_file_bytes")
+            if _data_name and _uploaded_file_obj:
+                progress.progress(28, text=f"Uploading your data file ({_data_name})…")
+                _safe_name    = re.sub(r"[^\w.\-]", "_", _data_name)
+                _repo_path    = f"data/{_safe_name}"
+                # _uploaded_file_bytes is stored as bytes in session state
+                _file_b64     = base64.b64encode(_uploaded_file_obj).decode("utf-8")
+                # Use the GitHub Contents API directly (binary-safe base64)
+                _hdr = {
+                    "Authorization": f"token {pat}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                }
+                _chk = _req.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/contents/{_repo_path}",
+                    headers=_hdr, timeout=20,
+                )
+                _body = {
+                    "message": f"data: add {_safe_name}",
+                    "content": _file_b64,
+                }
+                if _chk.status_code == 200:
+                    _body["sha"] = _chk.json().get("sha", "")
+                _push_r = _req.put(
+                    f"https://api.github.com/repos/{owner}/{repo}/contents/{_repo_path}",
+                    headers=_hdr, json=_body, timeout=60,
+                )
+                results[f"📁 data/{_safe_name}"] = (
+                    _push_r.status_code in (200, 201),
+                    "uploaded" if _push_r.status_code in (200, 201)
+                    else f"HTTP {_push_r.status_code}: {_push_r.text[:150]}",
+                )
+
+            # 2c. Push requirements.txt and all agent code
             progress.progress(35, text="Uploading agent code…")
             _agent_files = [
                 "requirements.txt",
