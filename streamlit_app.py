@@ -1630,7 +1630,7 @@ def _validate_kpis_against_df(kpis_raw: list, df: pd.DataFrame) -> list:
 
 def _build_kpi_prompt(df: pd.DataFrame) -> str:
     col_types = {c: str(df[c].dtype) for c in df.columns}
-    sample    = df.head(8).to_dict(orient="records")
+    sample    = df.head(3).to_dict(orient="records")   # 3 rows keeps prompt short
     return f"""You are a senior data analyst and KPI expert working with business leadership teams.
 
 Analyse this dataset and suggest the most impactful KPIs for executive reporting.
@@ -1642,29 +1642,29 @@ SAMPLE DATA (first 8 rows):
 {json.dumps(sample, indent=2, default=str)}
 
 INSTRUCTIONS:
-1. Identify the precise business domain (e.g. Quick Service Restaurant, Airlines & Aviation, Retail & E-Commerce, Banking & Finance, etc.)
-2. Suggest 8 to 12 KPIs that a C-Suite or senior leadership team would track for this domain
-3. ONLY include KPIs whose required source column(s) EXIST in this dataset — do not invent columns
-4. For ratio/derived KPIs both num_col and den_col must be present in the dataset
-5. Be specific to the domain: e.g. for airlines include Load Factor%, On-Time Performance%, Revenue per Passenger; for QSR include Drive-Thru Speed, Avg Service Time, Channel Mix %
+1. Identify the precise business domain (e.g. Quick Service Restaurant, Airlines & Aviation, Retail & E-Commerce, Banking & Finance)
+2. Suggest exactly 8 KPIs that a C-Suite would track for this domain
+3. ONLY use columns that EXIST in this dataset — never invent column names
+4. For ratio KPIs both num_col and den_col must exist in the dataset
+5. Keep "description" under 8 words. Keep "formula" under 6 words.
 
-Return ONLY valid JSON — no markdown fences, no explanation text — in this exact schema:
+Return ONLY a JSON object — no markdown, no prose:
 {{
-  "domain": "short_snake_case_domain_id",
-  "domain_label": "Human Readable Domain Label",
-  "domain_emoji": "single emoji",
+  "domain": "snake_case_id",
+  "domain_label": "Human Readable Label",
+  "domain_emoji": "emoji",
   "kpis": [
     {{
-      "name": "KPI display name",
-      "column": "exact column name from dataset (for direct KPIs)",
-      "agg": "sum | mean | nunique | ratio",
-      "format": "currency | integer | percent | decimal | minutes | score",
-      "formula": "human-readable formula e.g. SUM(Revenue (EUR))",
-      "description": "one-line business description of what this measures and why it matters",
-      "kpi_type": "direct | derived",
-      "num_col": "numerator column name (ratio KPIs only, else omit)",
-      "den_col": "denominator column name (ratio KPIs only, else omit)",
-      "den_agg": "sum | nunique (ratio KPIs only, else omit)"
+      "name": "KPI Name",
+      "column": "exact column name",
+      "agg": "sum|mean|nunique|ratio",
+      "format": "currency|integer|percent|decimal",
+      "formula": "e.g. SUM(Revenue)",
+      "description": "max 8 words",
+      "kpi_type": "direct|derived",
+      "num_col": "col (ratio only)",
+      "den_col": "col (ratio only)",
+      "den_agg": "sum|nunique (ratio only)"
     }}
   ]
 }}"""
@@ -1720,7 +1720,7 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
         from google.genai import types as _gtypes
         client = _genai.Client(api_key=api_key)
         resp = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash",
             contents=prompt,
             config=_gtypes.GenerateContentConfig(
                 temperature=0.1,
@@ -1728,7 +1728,7 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
                 response_mime_type="application/json",  # strict JSON output
             ),
         )
-        result = json.loads(resp.text)              # new SDK always returns valid JSON
+        result = _robust_json_parse(resp.text)      # parse with fallback repair
         st.session_state.pop("_kpi_llm_error", None)
         return result
     except Exception as e:
@@ -2757,6 +2757,13 @@ def _clear_kpi_cache():
               "detected_domain_emoji", "date_col", "role_kpi_map",
               "_kpi_llm_error", "_kpi_used_fallback"):
         st.session_state.pop(k, None)
+    # Also delete the on-disk cache so stale domain results don't persist
+    try:
+        cache_path = _ROOT / "aria_kpi_cache.json"
+        if cache_path.exists():
+            cache_path.unlink()
+    except Exception:
+        pass
 
 
 # ════════════════════════════════════════════════════════════════════════════════
