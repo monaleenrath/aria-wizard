@@ -73,11 +73,17 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
     roles  = load_roles("roles.yaml")
 
     # 1 — DATA ------------------------------------------------------------- #
+    # Collect KPI columns from config so data_loader can coerce them to numeric
+    _kpi_columns = [
+        k.get("column") for k in config.get("metrics", {}).get("kpis", [])
+        if k.get("column")
+    ]
     df = load_data(
         google_sheet_url=config["data"].get("google_sheet_url"),
         excel_path=config["data"].get("excel_path"),
-        sheet_name=config["data"].get("sheet_name", "Orders"),
+        sheet_name=config["data"].get("sheet_name", "Sheet1"),
         date_column=config["data"]["date_column"],
+        kpi_columns=_kpi_columns,
     )
 
     # 2 — METRICS ---------------------------------------------------------- #
@@ -109,12 +115,20 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         (df_spark[date_col].dt.date >= thirty_days_ago) &
         (df_spark[date_col].dt.date <= _dt2.date.fromisoformat(snapshot.reference_date))
     ]
+    # Use the first "sum" KPI column for the sparkline (falls back to "Sales" if present)
+    _spark_col = None
+    for _kpi in config.get("metrics", {}).get("kpis", []):
+        if _kpi.get("agg") == "sum" and _kpi.get("column") in df_spark.columns:
+            _spark_col = _kpi["column"]
+            break
+    if _spark_col is None and "Sales" in df_spark.columns:
+        _spark_col = "Sales"
     daily_sales_30d = (
-        df_spark.groupby(df_spark[date_col].dt.date)["Sales"]
+        df_spark.groupby(df_spark[date_col].dt.date)[_spark_col]
         .sum()
         .sort_index()
         .tolist()
-    ) if "Sales" in df_spark.columns else []
+    ) if _spark_col else []
 
     payload = {
         **snapshot.to_dict(),
@@ -229,10 +243,9 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
 
         log.info("Delivery results for %s: %s", role_name, role_delivery)
 
-        # Throttle: Gemini free tier = 15 RPM. 4 roles fired back-to-back
-        # exhausts the per-minute bucket. A 5 s pause keeps us safely under.
-        log.info("Waiting 5 s before next role (Gemini rate-limit guard)...")
-        time.sleep(5)
+        # Throttle: small pause between roles to respect Gemini free-tier RPM.
+        log.info("Waiting 2 s before next role...")
+        time.sleep(2)
 
         all_results[role_name] = {
             "headline": narrative.headline,

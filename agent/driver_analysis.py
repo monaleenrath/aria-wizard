@@ -31,12 +31,25 @@ class DriverItem:
     contribution_pct: Optional[float]  # of total delta for that KPI
 
 
-def _agg(df: pd.DataFrame, dim: str, kpi: str) -> pd.Series:
+def _agg(df: pd.DataFrame, dim: str, kpi: str,
+         kpi_cfg: Optional[dict] = None) -> pd.Series:
     if df.empty:
         return pd.Series(dtype="float64")
-    if kpi == "Orders":
-        return df.groupby(dim)["Order ID"].nunique()
-    return df.groupby(dim)[kpi].sum()
+    if kpi_cfg:
+        agg_type = kpi_cfg.get("agg", "sum")
+        col = kpi_cfg.get("column", kpi)
+        if col not in df.columns:
+            return pd.Series(dtype="float64")
+        if agg_type == "nunique":
+            return df.groupby(dim)[col].nunique()
+        elif agg_type == "mean":
+            return df.groupby(dim)[col].mean()
+        else:
+            return df.groupby(dim)[col].sum()
+    # fallback
+    if kpi in df.columns:
+        return df.groupby(dim)[kpi].sum()
+    return pd.Series(dtype="float64")
 
 
 def analyze_drivers(
@@ -74,16 +87,28 @@ def analyze_drivers(
     today_df = df[df["_date"] == reference_date]
     prior_df = df[df["_date"] == prior_date]
 
+    # Build a lookup from KPI name → config dict
+    kpi_cfgs = {k["name"]: k for k in config.get("metrics", {}).get("kpis", [])}
+
+    # Only decompose KPIs that have a real column (skip DERIVED ratio KPIs)
+    kpis_to_decompose = [
+        k["name"] for k in config.get("metrics", {}).get("kpis", [])
+        if k.get("column") and k.get("column") != "DERIVED"
+        and k.get("agg") in ("sum", "nunique", "mean")
+    ]
+
     results: Dict[str, List[DriverItem]] = {}
-    kpis_to_decompose = ["Sales", "Profit", "Orders"]
 
     for kpi in kpis_to_decompose:
         items: List[DriverItem] = []
         total_delta = 0.0
+        cfg = kpi_cfgs.get(kpi)
 
         for dim in dims:
-            curr = _agg(today_df, dim, kpi)
-            prior = _agg(prior_df, dim, kpi)
+            if dim not in today_df.columns:
+                continue
+            curr = _agg(today_df, dim, kpi, cfg)
+            prior = _agg(prior_df, dim, kpi, cfg)
             members = sorted(set(curr.index) | set(prior.index))
             for m in members:
                 c = float(curr.get(m, 0.0))

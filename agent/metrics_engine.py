@@ -216,16 +216,17 @@ def compute_metrics(
             format=fmt,
         )
 
-    # Derived metrics
-    sales = kpis["Sales"].value if "Sales" in kpis else 0
-    profit = kpis["Profit"].value if "Profit" in kpis else 0
-    orders = kpis["Orders"].value if "Orders" in kpis else 0
+    # Derived metrics — only computed when the relevant KPIs exist
+    # (works for any dataset, not just Superstore)
+    sales  = kpis["Sales"].value  if "Sales"  in kpis else None
+    profit = kpis["Profit"].value if "Profit" in kpis else None
+    orders = kpis["Orders"].value if "Orders" in kpis else None
 
-    if orders:
+    if sales is not None and orders:
         aov = sales / orders
         kpis["AOV"] = KPI("AOV", aov, _fmt(aov, "currency"),
                           None, None, None, None, "flat", "currency")
-    if sales:
+    if sales is not None and profit is not None and sales:
         margin = profit / sales
         kpis["Margin%"] = KPI("Margin%", margin, _fmt(margin, "percent"),
                               None, None, None, None,
@@ -233,15 +234,30 @@ def compute_metrics(
                               "percent")
 
     # ---------------- Anomaly detection (z-score on lookback window) ----- #
-    daily = (
-        df.groupby("_date")
-          .agg(Sales=("Sales", "sum"),
-               Profit=("Profit", "sum"),
-               Orders=("Order ID", "nunique"),
-               Quantity=("Quantity", "sum"))
-          .reset_index()
-          .sort_values("_date")
-    )
+    # Build a daily aggregation using only the KPIs from config (no hardcoded columns).
+    _agg_spec: Dict[str, tuple] = {}
+    for _kpi_cfg in kpi_cfgs:
+        _col  = _kpi_cfg.get("column")
+        _agg  = _kpi_cfg.get("agg", "sum")
+        _name = _kpi_cfg["name"]
+        if not _col or _col not in df.columns:
+            continue
+        if _agg == "sum":
+            _agg_spec[_name] = (_col, "sum")
+        elif _agg == "nunique":
+            _agg_spec[_name] = (_col, "nunique")
+        elif _agg == "mean":
+            _agg_spec[_name] = (_col, "mean")
+
+    if _agg_spec:
+        daily = (
+            df.groupby("_date")
+              .agg(**_agg_spec)
+              .reset_index()
+              .sort_values("_date")
+        )
+    else:
+        daily = df[["_date"]].drop_duplicates().sort_values("_date").reset_index(drop=True)
 
     window = daily[
         (daily["_date"] >= reference_date - timedelta(days=lookback)) &
@@ -249,15 +265,19 @@ def compute_metrics(
     ]
 
     anomalies: List[Anomaly] = []
-    for metric in ["Sales", "Profit", "Orders", "Quantity"]:
-        if metric not in kpis:
+    for metric in list(kpis.keys()):
+        # Only run anomaly detection on primary (non-derived) KPIs present in daily
+        if metric not in daily.columns:
             continue
-        if window.empty or window[metric].std(ddof=0) == 0:
+        if window.empty or len(window) < 3:
+            continue
+        col_std = window[metric].std(ddof=0)
+        if col_std == 0:
             continue
         mean = window[metric].mean()
-        std = window[metric].std(ddof=0)
+        std  = col_std
         curr_val = kpis[metric].value
-        z = (curr_val - mean) / std if std else 0
+        z = (curr_val - mean) / std
         if abs(z) >= anomaly_threshold:
             anomalies.append(
                 Anomaly(
@@ -271,13 +291,13 @@ def compute_metrics(
 
     # ---------------- Trend summary (last 7d / 30d averages) -------------- #
     trend: Dict[str, Dict[str, float]] = {}
-    for metric in ["Sales", "Profit", "Orders"]:
+    for metric in list(kpis.keys()):
         if metric not in daily.columns:
             continue
-        last_7 = daily[daily["_date"] >= reference_date - timedelta(days=7)][metric].mean()
+        last_7  = daily[daily["_date"] >= reference_date - timedelta(days=7)][metric].mean()
         last_30 = daily[daily["_date"] >= reference_date - timedelta(days=30)][metric].mean()
         trend[metric] = {
-            "avg_last_7d": round(float(last_7), 2) if not pd.isna(last_7) else 0.0,
+            "avg_last_7d":  round(float(last_7),  2) if not pd.isna(last_7)  else 0.0,
             "avg_last_30d": round(float(last_30), 2) if not pd.isna(last_30) else 0.0,
         }
 

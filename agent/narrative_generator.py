@@ -415,7 +415,7 @@ def _generate_gemini(payload: dict, cfg: dict, role_config: dict) -> NarrativeRe
             )
         except ServerError as exc:
             if attempt < max_attempts:
-                wait = 15 * attempt
+                wait = 3 * attempt  # 3s then 6s — fast fail instead of 15s/30s
                 log.warning(
                     "Gemini 503 (attempt %d/%d) — retrying in %d s: %s",
                     attempt, max_attempts, wait, exc,

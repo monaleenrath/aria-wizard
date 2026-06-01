@@ -1,10 +1,10 @@
 """
 data_loader.py
 --------------
-Loads the Superstore dataset.
+Loads data for the ARIA pipeline.
 
 Primary source : Google Sheets (public, CSV export endpoint)
-Backup source  : local Excel file (Superstore.xls / .xlsx) in data/
+Backup source  : local Excel / CSV file in data/
 
 Why Google Sheets first:
   - Refreshes automatically — agent always sees yesterday's data.
@@ -14,7 +14,7 @@ Why Google Sheets first:
 The loader is intentionally forgiving:
   1. Try the Sheets URL.
   2. If it fails (network, sharing not public, sheet deleted), log the
-     reason and fall back to the local Excel file so the daily briefing
+     reason and fall back to the local file so the daily briefing
      still goes out.
 """
 
@@ -32,20 +32,9 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 
-# Required columns the downstream pipeline expects. Other columns are
-# preserved untouched.
-REQUIRED_COLUMNS = [
-    "Order Date",
-    "Sales",
-    "Profit",
-    "Quantity",
-    "Order ID",
-    "Category",
-    "Sub-Category",
-    "Region",
-    "Segment",
-    "Ship Mode",
-]
+# Kept for backward compatibility — but no longer enforced.
+# The pipeline reads required columns from config.yaml at runtime.
+REQUIRED_COLUMNS: list = []
 
 
 # --------------------------------------------------------------------------- #
@@ -107,23 +96,31 @@ def _read_excel(path: str, sheet_name: str = "Orders") -> pd.DataFrame:
 # Cleaning
 # --------------------------------------------------------------------------- #
 
-def _clean(df: pd.DataFrame, date_column: str = "Order Date") -> pd.DataFrame:
+def _clean(df: pd.DataFrame, date_column: str = "Order Date",
+           kpi_columns: Optional[list] = None) -> pd.DataFrame:
+    """Clean loaded dataframe.
+
+    Only the date column is strictly required. KPI columns (from config.yaml)
+    are coerced to numeric but never dropped — missing ones surface later as
+    zeros so the pipeline stays live even with partial data.
+    """
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
+    if date_column not in df.columns:
         raise ValueError(
-            f"Data source is missing required columns: {missing}. "
+            f"Date column '{date_column}' not found in data. "
             f"Available columns: {list(df.columns)}"
         )
 
     df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
     df = df.dropna(subset=[date_column])
 
-    for col in ("Sales", "Profit", "Quantity"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Sales", "Profit", "Quantity"])
+    # Coerce any numeric-looking KPI columns to float
+    numeric_candidates = kpi_columns or []
+    for col in numeric_candidates:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.sort_values(date_column).reset_index(drop=True)
     log.info(
@@ -139,18 +136,25 @@ def _clean(df: pd.DataFrame, date_column: str = "Order Date") -> pd.DataFrame:
 # Public entry
 # --------------------------------------------------------------------------- #
 
+def _read_csv(path: str) -> pd.DataFrame:
+    log.info("Reading CSV file %s", path)
+    return pd.read_csv(path)
+
+
 def load_data(
     google_sheet_url: Optional[str] = None,
     excel_path: Optional[str] = None,
     sheet_name: str = "Orders",
     date_column: str = "Order Date",
     tableau_public_url: Optional[str] = None,
+    kpi_columns: Optional[list] = None,
 ) -> pd.DataFrame:
     """
-    Load Superstore data. Google Sheets first, Excel as fallback.
+    Load data for the ARIA pipeline. Google Sheets first, local file as fallback.
 
     google_sheet_url : any Google Sheets URL (the loader extracts the CSV)
-    excel_path       : optional local file path (used only if Sheets fails)
+    excel_path       : optional local file path (.xls, .xlsx, or .csv)
+    kpi_columns      : list of column names used as KPIs — coerced to numeric
     """
     last_exc: Optional[Exception] = None
 
@@ -158,42 +162,44 @@ def load_data(
     if google_sheet_url:
         try:
             df = _read_google_sheet(google_sheet_url)
-            return _clean(df, date_column=date_column)
+            return _clean(df, date_column=date_column, kpi_columns=kpi_columns)
         except Exception as exc:
             log.warning(
-                "Google Sheets fetch failed (%s). Will try local Excel fallback.",
+                "Google Sheets fetch failed (%s). Will try local file fallback.",
                 exc,
             )
             last_exc = exc
 
-    # 2) Try local Excel
+    # 2) Try local file (Excel or CSV)
     if excel_path:
-        # Try the configured extension first, then the sibling .xls/.xlsx
+        ext = Path(excel_path).suffix.lower()
+
+        # Build candidate list (try both .xls and .xlsx for Excel)
         candidates = [excel_path]
-        base, ext = os.path.splitext(excel_path)
-        if ext.lower() == ".xls":
-            candidates.append(base + ".xlsx")
-        elif ext.lower() == ".xlsx":
-            candidates.append(base + ".xls")
+        if ext == ".xls":
+            candidates.append(Path(excel_path).with_suffix(".xlsx").as_posix())
+        elif ext == ".xlsx":
+            candidates.append(Path(excel_path).with_suffix(".xls").as_posix())
 
         for p in candidates:
             if not os.path.exists(p):
                 continue
             try:
-                df = _read_excel(p, sheet_name=sheet_name)
-                return _clean(df, date_column=date_column)
+                p_ext = Path(p).suffix.lower()
+                if p_ext == ".csv":
+                    df = _read_csv(p)
+                else:
+                    df = _read_excel(p, sheet_name=sheet_name)
+                return _clean(df, date_column=date_column, kpi_columns=kpi_columns)
             except Exception as exc:
                 log.warning("Could not read %s (%s) — trying next.", p, exc)
                 last_exc = exc
 
     msg = (
-        "Could not load Superstore data from any source. "
-        "Google Sheet: "
-        f"{'configured' if google_sheet_url else 'not configured'}. "
-        f"Local Excel: "
-        f"{'configured ('+excel_path+')' if excel_path else 'not configured'}. "
-        "Most common fix: make sure the Google Sheet is shared as "
-        "\"Anyone with the link → Viewer\". "
+        "Could not load data from any source. "
+        f"Google Sheet: {'configured' if google_sheet_url else 'not configured'}. "
+        f"Local file: {'configured ('+str(excel_path)+')' if excel_path else 'not configured'}. "
+        "If using Google Sheets, make sure it is shared as 'Anyone with the link → Viewer'. "
         f"Backup dashboard: {tableau_public_url}"
     )
     log.error(msg)
