@@ -92,10 +92,10 @@ def _sparkline_points(values: list[float],
 _DEFAULT_ROLE = {
     "title": "Leadership",
     "badge": "ARIA  ·  EXECUTIVE BRIEFING",
-    "primary_kpi": "Sales",
-    "kpis": ["Sales", "Profit", "Orders", "Margin%"],
+    "primary_kpi": None,   # resolved dynamically from payload
+    "kpis": [],
     "accent_color": "#F59E0B",
-    "driver_focus": ["Category", "Region"],
+    "driver_focus": [],
 }
 
 
@@ -121,21 +121,33 @@ def generate_svg(narrative, payload: dict, _config: dict,
     ref_date = payload.get("reference_date", "")
     kpis     = payload.get("kpis", {})
 
-    # Primary KPI — hero number (role-specific)
-    primary_kpi_data = kpis.get(prim_kpi) or kpis.get("Sales", {})
-    primary_val      = primary_kpi_data.get("value_fmt", "$0")
+    # Primary KPI — resolve dynamically: use role config, else first available KPI
+    if not prim_kpi or prim_kpi not in kpis:
+        prim_kpi = next(iter(kpis), None) or "—"
+
+    primary_kpi_data = kpis.get(prim_kpi, {})
+    primary_val      = primary_kpi_data.get("value_fmt", "—")
     mom_str, mom_col = _fmt_pct(primary_kpi_data.get("mom_pct"), accent)
     yoy_str, yoy_col = _fmt_pct(primary_kpi_data.get("yoy_pct"), accent)
 
-    margin_fmt = kpis.get("Margin%", {}).get("value_fmt", "—")
-    orders_fmt = kpis.get("Orders",  {}).get("value_fmt", "—")
-    aov_fmt    = kpis.get("AOV",     {}).get("value_fmt", "—")
+    # Secondary metrics — show the role's other KPIs dynamically (not hardcoded)
+    role_kpis   = role.get("kpis", list(kpis.keys()))
+    sec_kpis    = [k for k in role_kpis if k != prim_kpi and k in kpis][:2]
+    sec1_name   = sec_kpis[0] if len(sec_kpis) > 0 else None
+    sec2_name   = sec_kpis[1] if len(sec_kpis) > 1 else None
+    sec1_fmt    = kpis.get(sec1_name, {}).get("value_fmt", "—") if sec1_name else "—"
+    sec2_fmt    = kpis.get(sec2_name, {}).get("value_fmt", "—") if sec2_name else "—"
 
     headline_lines = _wrap(_strip_md(narrative.headline), 70)[:2]
     exec_first     = _strip_md(narrative.exec_summary or "").split(".")[0].strip() + "."
 
-    all_drivers = payload.get("drivers", {}).get(prim_kpi) \
-               or payload.get("drivers", {}).get("Sales", [])
+    all_drivers = payload.get("drivers", {}).get(prim_kpi) or []
+    if not all_drivers:
+        # fallback: try first available driver key
+        for _k, _v in payload.get("drivers", {}).items():
+            if _v:
+                all_drivers = _v
+                break
     lifts = sorted([d for d in all_drivers if d.get("delta", 0) > 0],
                    key=lambda d: d["delta"], reverse=True)[:3]
     drags = sorted([d for d in all_drivers if d.get("delta", 0) < 0],
@@ -195,8 +207,10 @@ def generate_svg(narrative, payload: dict, _config: dict,
     # Small primary KPI label above the number
     t(f'<text x="30" y="136" fill="#64748B" font-size="8" letter-spacing="2">{_e(prim_kpi.upper())}</text>')
     t(f'<text x="30" y="196" fill="{mom_col}" font-size="11" font-weight="600">{_e(mom_str)} MoM   ·   {_e(yoy_str)} YoY</text>')
-    t(f'<text x="30" y="222" fill="#CBD5E1" font-size="10" font-style="italic" font-family="Georgia, serif">Margin: {_e(margin_fmt)}</text>')
-    t(f'<text x="30" y="238" fill="#CBD5E1" font-size="10" font-style="italic" font-family="Georgia, serif">Orders: {_e(orders_fmt)}   ·   AOV: {_e(aov_fmt)}</text>')
+    if sec1_name:
+        t(f'<text x="30" y="222" fill="#CBD5E1" font-size="10" font-style="italic" font-family="Georgia, serif">{_e(sec1_name)}: {_e(sec1_fmt)}</text>')
+    if sec2_name:
+        t(f'<text x="30" y="238" fill="#CBD5E1" font-size="10" font-style="italic" font-family="Georgia, serif">{_e(sec2_name)}: {_e(sec2_fmt)}</text>')
 
     # Sparkline
     if len(daily_sales) >= 4:
