@@ -1719,7 +1719,7 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
         import requests as _rq
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash:generateContent?key={api_key}"
+            f"gemini-1.5-flash-latest:generateContent?key={api_key}"
         )
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -1961,7 +1961,7 @@ Return ONLY valid JSON — no markdown, no explanation:
         import requests as _rq
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash:generateContent?key={api_key}"
+            f"gemini-1.5-flash-latest:generateContent?key={api_key}"
         )
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -3049,8 +3049,15 @@ def step_discover_kpis():
     llm_err = st.session_state.get("_kpi_llm_error")
     if llm_err:
         st.warning(f"⚠️ Gemini could not be reached — {llm_err}")
-    if st.session_state.get("_kpi_used_fallback"):
+    if st.session_state.get("_kpi_used_fallback") or llm_err:
         st.info("ℹ️ Gemini was unavailable — KPIs were detected using the built-in pattern engine. Go back to Step 3 and verify your API key to use Gemini.")
+        if st.button("🔄 Re-run KPI Detection with Gemini", key="retry_kpi_btn"):
+            _clear_kpi_cache()
+            st.session_state.pop("kpis", None)
+            st.session_state.pop("role_kpi_map", None)
+            st.session_state.pop("_kpi_llm_error", None)
+            st.session_state.pop("_kpi_used_fallback", None)
+            st.rerun()
 
     kpis = st.session_state.get("kpis", [])
     if not kpis:
