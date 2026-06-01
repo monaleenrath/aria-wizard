@@ -1709,30 +1709,77 @@ def _robust_json_parse(raw: str) -> dict:
     return json.loads(fixed2)   # let this raise if still broken
 
 
+def _pick_gemini_model(api_key: str) -> str | None:
+    """
+    Query the models list endpoint to find the best available flash model
+    that supports generateContent. Returns model id string or None.
+    """
+    import requests as _rq
+    # Preference order — pick the first one available on this key
+    PREFERRED = [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-pro",
+        "gemini-pro",
+    ]
+    try:
+        r = _rq.get(
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        available = {
+            m["name"].split("/")[-1]
+            for m in r.json().get("models", [])
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+        }
+        for model in PREFERRED:
+            if model in available:
+                return model
+        # Last resort: return first available generateContent model
+        if available:
+            return next(iter(available))
+    except Exception:
+        pass
+    return None
+
+
 def _call_gemini_for_kpis(prompt: str) -> dict | None:
-    """Call Gemini 2.0 Flash via REST API (no SDK dependency). Returns parsed dict or None."""
+    """Call Gemini via REST API — auto-detects the best available model."""
     api_key = st.session_state.get("gemini_key") or st.session_state.get("gemini_key_input")
     if not api_key:
         st.session_state["_kpi_llm_error"] = "No Gemini API key found. Please go back to Step 3 and enter your key."
         return None
     try:
         import requests as _rq
+
+        # Auto-pick best model available for this key
+        model = _pick_gemini_model(api_key)
+        if not model:
+            st.session_state["_kpi_llm_error"] = "Could not list Gemini models — check your API key is valid."
+            return None
+
         url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash-latest:generateContent?key={api_key}"
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={api_key}"
         )
+        # gemini-pro doesn't support responseMimeType — use it only as last resort
+        gen_cfg: dict = {"temperature": 0.1, "maxOutputTokens": 4096}
+        if model != "gemini-pro":
+            gen_cfg["responseMimeType"] = "application/json"
+
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 4096,
-                "responseMimeType": "application/json",   # forces valid JSON output
-            },
+            "generationConfig": gen_cfg,
         }
         r = _rq.post(url, json=body, timeout=60)
         if r.status_code != 200:
-            err = r.json().get("error", {}).get("message", r.text[:200])
-            st.session_state["_kpi_llm_error"] = f"Gemini error: {r.status_code} — {err}"
+            err = r.json().get("error", {}).get("message", r.text[:300])
+            st.session_state["_kpi_llm_error"] = f"Gemini ({model}) error: {r.status_code} — {err}"
             return None
         text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
         result = _robust_json_parse(text)
@@ -1959,17 +2006,19 @@ Return ONLY valid JSON — no markdown, no explanation:
 
     try:
         import requests as _rq
+        model = _pick_gemini_model(api_key)
+        if not model:
+            return None
         url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash-latest:generateContent?key={api_key}"
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={api_key}"
         )
+        gen_cfg: dict = {"temperature": 0.1, "maxOutputTokens": 2048}
+        if model != "gemini-pro":
+            gen_cfg["responseMimeType"] = "application/json"
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 2048,
-                "responseMimeType": "application/json",
-            },
+            "generationConfig": gen_cfg,
         }
         r = _rq.post(url, json=body, timeout=60)
         if r.status_code != 200:
