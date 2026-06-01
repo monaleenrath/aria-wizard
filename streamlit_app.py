@@ -1638,7 +1638,7 @@ Analyse this dataset and suggest the most impactful KPIs for executive reporting
 DATASET COLUMNS AND TYPES:
 {json.dumps(col_types, indent=2)}
 
-SAMPLE DATA (first 8 rows):
+SAMPLE DATA (first 3 rows):
 {json.dumps(sample, indent=2, default=str)}
 
 INSTRUCTIONS:
@@ -1710,25 +1710,32 @@ def _robust_json_parse(raw: str) -> dict:
 
 
 def _call_gemini_for_kpis(prompt: str) -> dict | None:
-    """Call Gemini 2.5 Flash with JSON mode. Returns parsed dict or None."""
+    """Call Gemini 2.0 Flash via REST API (no SDK dependency). Returns parsed dict or None."""
     api_key = st.session_state.get("gemini_key") or st.session_state.get("gemini_key_input")
     if not api_key:
         st.session_state["_kpi_llm_error"] = "No Gemini API key found. Please go back to Step 3 and enter your key."
         return None
     try:
-        from google import genai as _genai          # newer google-genai SDK
-        from google.genai import types as _gtypes
-        client = _genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-            config=_gtypes.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=4096,
-                response_mime_type="application/json",  # strict JSON output
-            ),
+        import requests as _rq
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash:generateContent?key={api_key}"
         )
-        result = _robust_json_parse(resp.text)      # parse with fallback repair
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 4096,
+                "responseMimeType": "application/json",   # forces valid JSON output
+            },
+        }
+        r = _rq.post(url, json=body, timeout=60)
+        if r.status_code != 200:
+            err = r.json().get("error", {}).get("message", r.text[:200])
+            st.session_state["_kpi_llm_error"] = f"Gemini error: {r.status_code} — {err}"
+            return None
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        result = _robust_json_parse(text)
         st.session_state.pop("_kpi_llm_error", None)
         return result
     except Exception as e:
@@ -1951,19 +1958,24 @@ Return ONLY valid JSON — no markdown, no explanation:
 }}"""
 
     try:
-        from google import genai as _genai
-        from google.genai import types as _gtypes
-        client = _genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=_gtypes.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=2048,
-                response_mime_type="application/json",
-            ),
+        import requests as _rq
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash:generateContent?key={api_key}"
         )
-        mapping = json.loads(resp.text)
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 2048,
+                "responseMimeType": "application/json",
+            },
+        }
+        r = _rq.post(url, json=body, timeout=60)
+        if r.status_code != 200:
+            return None
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        mapping = _robust_json_parse(text)
         # Validate: only keep KPI names that exist in our detected list
         valid = {k["user_name"] for k in enabled_kpis}
         for role in mapping:
