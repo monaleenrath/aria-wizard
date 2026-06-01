@@ -1715,14 +1715,16 @@ def _pick_gemini_model(api_key: str) -> str | None:
     that supports generateContent. Returns model id string or None.
     """
     import requests as _rq
-    # Preference order — pick the first one available on this key
+    # Free-tier models first — never pick a paid model when a free one is available
     PREFERRED = [
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-pro",
+        "gemini-1.5-flash",        # free tier, 15 RPM
+        "gemini-1.5-flash-8b",     # free tier, smaller/faster
+        "gemini-1.5-flash-001",    # free tier pinned version
+        "gemini-1.5-flash-002",    # free tier pinned version
+        "gemini-2.0-flash-lite",   # free tier (new)
+        "gemini-1.5-pro",          # free tier (limited)
+        "gemini-1.5-pro-001",
+        "gemini-2.0-flash",        # requires billing — last resort
         "gemini-pro",
     ]
     try:
