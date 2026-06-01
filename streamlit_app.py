@@ -1670,8 +1670,47 @@ Return ONLY valid JSON — no markdown fences, no explanation text — in this e
 }}"""
 
 
+def _robust_json_parse(raw: str) -> dict:
+    """
+    Robustly extract and parse JSON from an LLM response that may contain
+    markdown fences, trailing commas, single quotes, or extra prose.
+    """
+    # 1. Strip markdown fences
+    if "```" in raw:
+        parts = raw.split("```")
+        for part in parts:
+            candidate = part.lstrip("json").strip()
+            if candidate.startswith("{"):
+                raw = candidate
+                break
+
+    # 2. Find the outermost { ... } block
+    start = raw.find("{")
+    end   = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        raw = raw[start:end + 1]
+
+    # 3. Try direct parse first
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # 4. Fix trailing commas  e.g.  [1, 2, 3,]  or  {"a":1,}
+    import re as _re
+    fixed = _re.sub(r",\s*([}\]])", r"\1", raw)
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    # 5. Replace Python literals
+    fixed2 = fixed.replace("True", "true").replace("False", "false").replace("None", "null")
+    return json.loads(fixed2)   # let this raise if still broken
+
+
 def _call_gemini_for_kpis(prompt: str) -> dict | None:
-    """Call Gemini 2.5 Flash. Returns parsed JSON dict or None on failure."""
+    """Call Gemini 2.5 Flash with JSON mode. Returns parsed dict or None."""
     api_key = st.session_state.get("gemini_key") or st.session_state.get("gemini_key_input")
     if not api_key:
         st.session_state["_kpi_llm_error"] = "No Gemini API key found. Please go back to Step 3 and enter your key."
@@ -1679,22 +1718,17 @@ def _call_gemini_for_kpis(prompt: str) -> dict | None:
     try:
         import google.generativeai as genai  # type: ignore
         genai.configure(api_key=api_key)
-        model  = genai.GenerativeModel("gemini-2.5-flash")
-        resp   = model.generate_content(
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        resp  = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.1, max_output_tokens=4096
+                temperature=0.1,
+                max_output_tokens=4096,
+                response_mime_type="application/json",   # force valid JSON output
             ),
         )
-        raw = resp.text.strip()
-        # Strip accidental markdown fences
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.rsplit("```", 1)[0].strip()
-        result = json.loads(raw)
-        st.session_state.pop("_kpi_llm_error", None)   # clear any previous error
+        result = _robust_json_parse(resp.text.strip())
+        st.session_state.pop("_kpi_llm_error", None)
         return result
     except Exception as e:
         st.session_state["_kpi_llm_error"] = f"Gemini error: {type(e).__name__}: {str(e)[:200]}"
@@ -1922,16 +1956,12 @@ Return ONLY valid JSON — no markdown, no explanation:
         resp   = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.1, max_output_tokens=2048
+                temperature=0.1,
+                max_output_tokens=2048,
+                response_mime_type="application/json",
             ),
         )
-        raw = resp.text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.rsplit("```", 1)[0].strip()
-        mapping = json.loads(raw)
+        mapping = _robust_json_parse(resp.text.strip())
         # Validate: only keep KPI names that exist in our detected list
         valid = {k["user_name"] for k in enabled_kpis}
         for role in mapping:
