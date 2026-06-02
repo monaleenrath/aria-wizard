@@ -834,25 +834,9 @@ def render_help_sidebar():
 
 def screen_auth():
     """Full-page login / register screen shown when no user is in session."""
-    # ── Read remembered email + full email history from localStorage ─────── #
-    _remembered_email = ""
-    _email_history: list[str] = []
-    try:
-        from streamlit_js_eval import streamlit_js_eval
-        _rem = streamlit_js_eval(
-            js_expressions="localStorage.getItem('aria_rem_email') || ''",
-            key="read_rem_email",
-        )
-        if _rem and isinstance(_rem, str):
-            _remembered_email = _rem
-        _hist = streamlit_js_eval(
-            js_expressions="JSON.parse(localStorage.getItem('aria_email_history') || '[]')",
-            key="read_email_history",
-        )
-        if isinstance(_hist, list):
-            _email_history = [e for e in _hist if isinstance(e, str) and e]
-    except Exception:
-        pass
+    # ── Email history stored in session state only (no localStorage / JS) ── #
+    _remembered_email = st.session_state.get("_auth_rem_email", "")
+    _email_history: list[str] = st.session_state.get("_auth_email_history", [])
 
     st.markdown("""
     <style>
@@ -931,33 +915,16 @@ def screen_auth():
                     if user:
                         st.session_state.user = user
                         log_activity(user["email"], user["name"], "login", "Signed in")
-                        try:
-                            from streamlit_js_eval import streamlit_js_eval
-                            safe_email = email_in.strip().replace("'", "\\'")
-                            # Always add to history (max 5, most recent first)
-                            streamlit_js_eval(
-                                js_expressions=(
-                                    f"var h=JSON.parse(localStorage.getItem('aria_email_history')||'[]');"
-                                    f"h=h.filter(e=>e!=='{safe_email}');"
-                                    f"h.unshift('{safe_email}');"
-                                    f"h=h.slice(0,5);"
-                                    f"localStorage.setItem('aria_email_history',JSON.stringify(h));"
-                                ),
-                                key="save_email_history",
-                            )
-                            # Remember me: keep/clear the auto-fill email
-                            if remember_me:
-                                streamlit_js_eval(
-                                    js_expressions=f"localStorage.setItem('aria_rem_email','{safe_email}')",
-                                    key="save_rem_email",
-                                )
-                            else:
-                                streamlit_js_eval(
-                                    js_expressions="localStorage.removeItem('aria_rem_email')",
-                                    key="clear_rem_email",
-                                )
-                        except Exception:
-                            pass
+                        # Update in-session email history (session-scoped only)
+                        _hist = st.session_state.get("_auth_email_history", [])
+                        _e = email_in.strip()
+                        _hist = [x for x in _hist if x != _e]
+                        _hist.insert(0, _e)
+                        st.session_state["_auth_email_history"] = _hist[:5]
+                        if remember_me:
+                            st.session_state["_auth_rem_email"] = _e
+                        else:
+                            st.session_state.pop("_auth_rem_email", None)
                         st.rerun()
                     else:
                         st.error("Incorrect email or password.")
