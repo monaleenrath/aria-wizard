@@ -49,14 +49,14 @@ STYLE_PALETTES: dict[str, dict] = {
         "border": "#1F2937", "footer_bg": "#111827",
     },
     "navy": {
-        "bg": "#0A1628", "surface": "#0F2040", "surface2": "#1A3055",
-        "text": "#F0F6FF", "subtext": "#A8C4E0", "muted": "#5B7FA6",
-        "border": "#1A3055", "footer_bg": "#081020",
+        "bg": "#1B3B6F", "surface": "#1E4A8A", "surface2": "#2558A0",
+        "text": "#F0F6FF", "subtext": "#A8C4E0", "muted": "#7BA8D0",
+        "border": "#2558A0", "footer_bg": "#152E58",
     },
     "grey": {
-        "bg": "#1A1F2E", "surface": "#252B3B", "surface2": "#323A4F",
-        "text": "#F1F5F9", "subtext": "#B0BAC9", "muted": "#6B7280",
-        "border": "#323A4F", "footer_bg": "#141820",
+        "bg": "#D8DEE9", "surface": "#C8D0E0", "surface2": "#B8C2D8",
+        "text": "#1A1F2E", "subtext": "#3A4560", "muted": "#6B7280",
+        "border": "#B8C2D8", "footer_bg": "#C0C8D8",
     },
     "beige": {
         "bg": "#F5F0E8", "surface": "#EDE8DF", "surface2": "#E0DAD0",
