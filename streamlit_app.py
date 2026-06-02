@@ -3578,43 +3578,49 @@ def step_set_delivery():
 def step_preview_card():
     st.header("🎨 Card Studio")
     st.caption(
-        "Design your briefing card. Choose a style, pick a template, select your "
-        "time window — then preview the **actual card** that gets posted to Slack."
+        "Design your briefing card. Choose a style, pick a time window, select a "
+        "template — then preview the **actual card** that gets posted to Slack."
     )
 
     role_cfg = _resolve_role()
 
     # ────────────────────────────────────────────────────────────────────────── #
-    # 1. CHOOSE CARD STYLE (4 visual backgrounds)
+    # 1. CHOOSE CARD STYLE — solid background swatches, uniform 4 boxes
     # ────────────────────────────────────────────────────────────────────────── #
     st.subheader("1. Choose Your Card Style")
 
     if "card_style" not in st.session_state:
         st.session_state.card_style = "dark"
 
-    style_cols = st.columns(4)
+    # Inject CSS so all 4 style buttons look uniform and render cleanly
+    st.markdown("""
+    <style>
+    div[data-testid="stHorizontalBlock"] > div { flex: 1 1 0 !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    style_cols = st.columns(4, gap="small")
     for col, (sk, sd) in zip(style_cols, CARD_STYLES.items()):
-        is_sel = st.session_state.card_style == sk
-        accent = role_cfg.get("accent_color", "#F59E0B")
-        border = accent if is_sel else "#374151"
-        swatch = sd["swatch"]
-        # Swatch: show background colour with role accent stripe
+        is_sel  = st.session_state.card_style == sk
+        swatch  = sd["swatch"]
+        border  = "#F59E0B" if is_sel else "#374151"
+        txt_col = "#F59E0B" if is_sel else ("#111111" if sk == "beige" else "#E5E7EB")
+        sub_col = "#888" if sk == "beige" else "#9CA3AF"
+        # Tick badge for selected
+        tick = '<div style="font-size:11px;color:#F59E0B;font-weight:900;margin-top:4px;">✓ Selected</div>' if is_sel else ""
         col.markdown(
             f'<div style="border:2.5px solid {border};border-radius:10px;'
-            f'padding:10px 8px;text-align:center;margin-bottom:8px;">'
-            f'<div style="width:100%;height:40px;border-radius:6px;'
-            f'background:{swatch};margin-bottom:7px;position:relative;overflow:hidden;">'
-            f'<div style="position:absolute;right:0;top:0;width:35%;height:100%;'
-            f'background:{accent};opacity:0.85;"></div>'
-            f'</div>'
-            f'<div style="font-size:11px;font-weight:700;'
-            f'color:{"#F59E0B" if is_sel else "var(--color-text-primary)"};">'
-            f'{sd["label"]}</div>'
-            f'<div style="font-size:9px;color:#9CA3AF;margin-top:3px;line-height:1.3;">'
-            f'{sd["tagline"]}</div></div>',
+            f'padding:12px 8px;text-align:center;height:110px;box-sizing:border-box;'
+            f'background:{swatch};cursor:pointer;">'
+            f'<div style="font-size:13px;font-weight:800;color:{txt_col};'
+            f'line-height:1.2;margin-top:4px;">{sd["label"]}</div>'
+            f'<div style="font-size:9px;color:{sub_col};margin-top:5px;line-height:1.4;">'
+            f'{sd["tagline"]}</div>'
+            f'{tick}'
+            f'</div>',
             unsafe_allow_html=True,
         )
-        if col.button("✓ Active" if is_sel else "Choose",
+        if col.button("Active ✓" if is_sel else "Select",
                       key=f"sty_{sk}", use_container_width=True,
                       type="primary" if is_sel else "secondary"):
             st.session_state.card_style = sk
@@ -3624,46 +3630,9 @@ def step_preview_card():
     st.divider()
 
     # ────────────────────────────────────────────────────────────────────────── #
-    # 2. CHOOSE CARD TEMPLATE (5 distinct layouts)
+    # 2. TIME PERIOD — single chip row, date range caption, custom picker
     # ────────────────────────────────────────────────────────────────────────── #
-    st.subheader("2. Choose Your Card Template")
-
-    if "card_template" not in st.session_state:
-        st.session_state.card_template = "editorial"
-
-    tmpl_cols = st.columns(5)
-    for col, (tk, td) in zip(tmpl_cols, CARD_TEMPLATES.items()):
-        is_sel = st.session_state.card_template == tk
-        accent = role_cfg.get("accent_color", "#F59E0B")
-        border = accent if is_sel else "#374151"
-        col.markdown(
-            f'<div style="border:2.5px solid {border};border-radius:10px;'
-            f'padding:10px 8px;text-align:center;margin-bottom:8px;min-height:120px;">'
-            f'<div style="font-size:11px;font-weight:700;'
-            f'color:{"#F59E0B" if is_sel else "var(--color-text-primary)"};">'
-            f'{td["label"]}</div>'
-            f'<div style="font-size:9px;color:#9CA3AF;margin-top:4px;line-height:1.3;">'
-            f'{td["tagline"]}</div>'
-            f'<div style="font-size:8px;color:#60A5FA;margin-top:6px;font-weight:600;">'
-            f'📊 {td["chart"]}</div>'
-            f'<div style="font-size:8px;color:#6B7280;margin-top:3px;">'
-            f'Best for: {td["best_for"]}</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        if col.button("✓ Active" if is_sel else "Choose",
-                      key=f"tmpl_{tk}", use_container_width=True,
-                      type="primary" if is_sel else "secondary"):
-            st.session_state.card_template = tk
-            _clear_preview()
-            st.rerun()
-
-    st.divider()
-
-    # ────────────────────────────────────────────────────────────────────────── #
-    # 3. TIME PERIOD — compact chips with hover tooltips + min/max date banner
-    # ────────────────────────────────────────────────────────────────────────── #
-    st.subheader("3. Time Period")
+    st.subheader("2. Time Period")
 
     role_now       = st.session_state.get("role_name", "")
     role_suggested = ROLE_TIMEFRAME_DEFAULTS.get(role_now, "")
@@ -3674,25 +3643,14 @@ def step_preview_card():
     _today         = date.today()
     _min_data_dt   = None
     _max_data_dt   = None
-    _data_gap_days = 0
 
     if _df_preview is not None and _date_col_p and _date_col_p in _df_preview.columns:
         try:
             _parsed      = pd.to_datetime(_df_preview[_date_col_p], errors="coerce").dt.date
             _min_data_dt = _parsed.min()
             _max_data_dt = _parsed.max()
-            _data_gap_days = (_today - _max_data_dt).days
         except Exception:
             _min_data_dt = _max_data_dt = None
-
-    # Data range banner (min + max dates)
-    if _min_data_dt and _max_data_dt:
-        st.info(
-            f"📅 Your data runs **{_min_data_dt.strftime('%b %d, %Y')}** → "
-            f"**{_max_data_dt.strftime('%b %d, %Y')}** "
-            f"({_data_gap_days} days ago). Timeframes with insufficient history are disabled.",
-            icon="ℹ️",
-        )
 
     def _tf_available(tf: dict) -> bool:
         if _max_data_dt is None:
@@ -3704,7 +3662,7 @@ def step_preview_card():
             return True
         return (_max_data_dt - _min_data_dt).days >= days_needed
 
-    # Auto-select best valid timeframe
+    # Auto-select best valid timeframe on first load
     if not current_tf and _max_data_dt is not None:
         _candidates = ([role_suggested] if role_suggested else []) + \
                       [tf["key"] for tf in TIMEFRAME_OPTIONS]
@@ -3715,57 +3673,210 @@ def step_preview_card():
                 current_tf = _cand
                 break
 
-    # Compact chip row — all 8 options in one row, small height
-    # Hover tooltip via CSS title attribute shown below the row
-    tf_cols = st.columns(len(TIMEFRAME_OPTIONS))
+    # Single chip row — one button per timeframe, NO duplicate markdown row above
+    _use_custom = st.session_state.get("timeframe_key") == "custom"
+    tf_cols = st.columns(len(TIMEFRAME_OPTIONS) + 1)  # +1 for Custom
     for col, tf in zip(tf_cols, TIMEFRAME_OPTIONS):
-        is_sel     = current_tf == tf["key"]
-        is_suggest = role_suggested == tf["key"]
-        is_dis     = not _tf_available(tf)
+        is_sel = current_tf == tf["key"] and not _use_custom
+        is_dis = not _tf_available(tf)
+        label  = f"✓ {tf['short']}" if is_sel else tf["short"]
+        if col.button(
+            label,
+            key=f"tf_{tf['key']}",
+            use_container_width=True,
+            disabled=is_dis,
+            type="primary" if is_sel else "secondary",
+            help=tf["desc"],
+        ):
+            st.session_state.timeframe_key = tf["key"]
+            _clear_preview()
+            st.rerun()
+    # Custom date range chip
+    _cust_col = tf_cols[-1]
+    _cust_sel = _use_custom
+    if _cust_col.button(
+        "✓ Custom" if _cust_sel else "Custom",
+        key="tf_custom",
+        use_container_width=True,
+        type="primary" if _cust_sel else "secondary",
+        help="Pick an exact start and end date from your data",
+    ):
+        st.session_state.timeframe_key = "custom"
+        _clear_preview()
+        st.rerun()
 
-        border_col = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_dis else ("#374151" if not is_dis else "#1F2937"))
-        bg_col     = "#1C2A1A" if is_sel else ("#1A2233" if is_suggest and not is_dis else ("#111827" if not is_dis else "#0D1117"))
-        label_col  = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_dis else ("#D1D5DB" if not is_dis else "#3F4A5C"))
+    # Refresh current_tf after button interactions
+    current_tf = st.session_state.get("timeframe_key")
 
-        badge = ""
-        if is_sel:
-            badge = f'<div style="font-size:7px;color:#F59E0B;font-weight:700;margin-top:2px;">✓</div>'
-        elif is_suggest and not is_dis:
-            badge = f'<div style="font-size:7px;color:#60A5FA;font-weight:700;margin-top:2px;">★</div>'
-        elif is_dis:
-            badge = f'<div style="font-size:7px;color:#3F4A5C;margin-top:2px;">–</div>'
-
-        col.markdown(
-            f'<div style="background:{bg_col};border:2px solid {border_col};'
-            f'border-radius:8px;padding:6px 4px;text-align:center;'
-            f'{"opacity:0.4;" if is_dis else ""}cursor:{"not-allowed" if is_dis else "pointer"};" '
-            f'title="{tf["desc"]}">'
-            f'<div style="font-size:14px;font-weight:900;color:{label_col};line-height:1;">'
-            f'{tf["short"]}</div>'
-            f'<div style="font-size:7px;color:{label_col};opacity:0.8;margin-top:1px;">'
-            f'{tf["label"]}</div>'
-            f'{badge}'
-            f'</div>',
-            unsafe_allow_html=True,
+    # Custom date range picker
+    if current_tf == "custom":
+        _c1, _c2 = st.columns(2)
+        _cust_start_default = _min_data_dt if _min_data_dt else (_today - timedelta(days=180))
+        _cust_end_default   = _max_data_dt if _max_data_dt else _today
+        _cust_start = _c1.date_input("Start date", value=st.session_state.get("custom_start", _cust_start_default),
+                                     min_value=_min_data_dt, max_value=_max_data_dt, key="custom_start_inp")
+        _cust_end   = _c2.date_input("End date",   value=st.session_state.get("custom_end",   _cust_end_default),
+                                     min_value=_min_data_dt, max_value=_max_data_dt, key="custom_end_inp")
+        st.session_state.custom_start = _cust_start
+        st.session_state.custom_end   = _cust_end
+        st.caption(
+            f"📅 Selected range: **{_cust_start.strftime('%b %d, %Y')}** → "
+            f"**{_cust_end.strftime('%b %d, %Y')}** "
+            f"({(_cust_end - _cust_start).days} days)"
         )
-        if col.button("✓" if is_sel else "•" if is_dis else tf["short"],
-                      key=f"tf_{tf['key']}", use_container_width=True,
-                      disabled=is_dis,
-                      help=tf["desc"]):
-            if not is_sel and not is_dis:
-                st.session_state.timeframe_key = tf["key"]
-                _clear_preview()
-                st.rerun()
-
-    if not current_tf:
+    elif current_tf and current_tf != "custom":
+        # Show the actual date range for the selected chip
+        active_tf = _tf_by_key(current_tf)
+        if active_tf and _max_data_dt:
+            if current_tf == "alltime" and _min_data_dt:
+                _range_start = _min_data_dt
+                _range_end   = _max_data_dt
+            elif current_tf == "ytd":
+                _range_start = date(_max_data_dt.year, 1, 1)
+                _range_end   = _max_data_dt
+            elif active_tf.get("days"):
+                _range_end   = _max_data_dt
+                _range_start = _range_end - timedelta(days=active_tf["days"])
+            else:
+                _range_start = _range_end = None
+            if _range_start and _range_end:
+                st.caption(
+                    f"📅 **{_range_start.strftime('%b %d, %Y')}** → "
+                    f"**{_range_end.strftime('%b %d, %Y')}** · {active_tf['comparison']}"
+                )
+        elif not _max_data_dt:
+            st.caption("📅 Upload data to see actual date range.")
+    else:
         st.info("👆 Select a time window above to generate your card.", icon="📅")
         nav_buttons(back=True, next_label="Next: Set Delivery →")
         return
 
-    active_tf = _tf_by_key(current_tf)
-    st.caption(
-        f"Window: **{active_tf['label']}** · Comparison: *{active_tf['comparison']}*"
-    )
+    if not current_tf:
+        nav_buttons(back=True, next_label="Next: Set Delivery →")
+        return
+
+    st.divider()
+
+    # ────────────────────────────────────────────────────────────────────────── #
+    # 3. CHOOSE CARD TEMPLATE — mini SVG wireframe thumbnails
+    # ────────────────────────────────────────────────────────────────────────── #
+    st.subheader("3. Choose Your Card Template")
+
+    if "card_template" not in st.session_state:
+        st.session_state.card_template = "editorial"
+
+    # Mini SVG wireframes representing each template's visual layout (80×56 viewBox)
+    _TMPL_WIREFRAMES = {
+        "editorial": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="56" rx="3" fill="#0B1220"/>
+          <rect x="3" y="3" width="74" height="8" rx="1" fill="#1E293B"/>
+          <rect x="3" y="14" width="28" height="16" rx="1" fill="#1E3A5F"/>
+          <rect x="3" y="14" width="28" height="4" rx="1" fill="#3B82F6" opacity="0.6"/>
+          <rect x="34" y="14" width="43" height="2" rx="1" fill="#374151"/>
+          <rect x="34" y="18" width="35" height="2" rx="1" fill="#374151"/>
+          <rect x="34" y="22" width="40" height="2" rx="1" fill="#374151"/>
+          <rect x="3" y="33" width="74" height="2" rx="1" fill="#1F2937"/>
+          <rect x="3" y="37" width="22" height="5" rx="1" fill="#374151"/>
+          <rect x="27" y="37" width="22" height="5" rx="1" fill="#374151"/>
+          <rect x="51" y="37" width="26" height="5" rx="1" fill="#374151"/>
+          <polyline points="3,52 12,48 21,50 30,45 39,47 48,43 57,46 66,41 74,44" fill="none" stroke="#3B82F6" stroke-width="1.5"/>
+        </svg>""",
+        "scorecard": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="56" rx="3" fill="#0B1220"/>
+          <rect x="3" y="3" width="74" height="6" rx="1" fill="#1E293B"/>
+          <rect x="3" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
+          <rect x="22" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
+          <rect x="41" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
+          <rect x="60" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
+          <circle cx="25" cy="39" r="12" fill="none" stroke="#1F2937" stroke-width="5"/>
+          <circle cx="25" cy="39" r="12" fill="none" stroke="#3B82F6" stroke-width="5" stroke-dasharray="30 45" stroke-dashoffset="-6"/>
+          <circle cx="25" cy="39" r="12" fill="none" stroke="#10B981" stroke-width="5" stroke-dasharray="18 57" stroke-dashoffset="-36"/>
+          <rect x="44" y="29" width="33" height="2" rx="1" fill="#374151"/>
+          <rect x="44" y="34" width="28" height="2" rx="1" fill="#374151"/>
+          <rect x="44" y="39" width="33" height="2" rx="1" fill="#374151"/>
+          <rect x="44" y="44" width="20" height="2" rx="1" fill="#374151"/>
+        </svg>""",
+        "story_arc": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="56" rx="3" fill="#0B1220"/>
+          <rect x="3" y="3" width="74" height="5" rx="1" fill="#1E293B"/>
+          <rect x="3" y="11" width="74" height="10" rx="1" fill="#1E3A5F" opacity="0.7"/>
+          <rect x="5" y="13" width="50" height="2" rx="1" fill="#93C5FD"/>
+          <rect x="5" y="17" width="38" height="2" rx="1" fill="#93C5FD" opacity="0.5"/>
+          <rect x="3" y="24" width="36" height="14" rx="1" fill="#14532D" opacity="0.8"/>
+          <rect x="41" y="24" width="18" height="14" rx="1" fill="#1E3A5F" opacity="0.8"/>
+          <rect x="61" y="24" width="16" height="14" rx="1" fill="#374151" opacity="0.8"/>
+          <rect x="41" y="39" width="36" height="6" rx="1" fill="#1A3D2B" opacity="0.7"/>
+          <rect x="3" y="41" width="36" height="4" rx="1" fill="#374151" opacity="0.5"/>
+        </svg>""",
+        "ops_dashboard": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="56" rx="3" fill="#0B1220"/>
+          <rect x="3" y="3" width="74" height="5" rx="1" fill="#1E293B"/>
+          <rect x="3" y="11" width="17" height="10" rx="2" fill="#14532D"/>
+          <circle cx="8" cy="16" r="3" fill="#10B981"/>
+          <rect x="22" y="11" width="17" height="10" rx="2" fill="#7C2D12"/>
+          <circle cx="27" cy="16" r="3" fill="#EF4444"/>
+          <rect x="41" y="11" width="17" height="10" rx="2" fill="#1E3A5F"/>
+          <circle cx="46" cy="16" r="3" fill="#3B82F6"/>
+          <rect x="60" y="11" width="17" height="10" rx="2" fill="#78350F"/>
+          <circle cx="65" cy="16" r="3" fill="#F59E0B"/>
+          <rect x="3" y="25" width="74" height="2" rx="1" fill="#1F2937"/>
+          <rect x="3" y="28" width="10" height="5" rx="1" fill="#14532D" opacity="0.9"/>
+          <rect x="15" y="28" width="10" height="5" rx="1" fill="#14532D" opacity="0.7"/>
+          <rect x="27" y="28" width="10" height="5" rx="1" fill="#7C2D12" opacity="0.9"/>
+          <rect x="39" y="28" width="10" height="5" rx="1" fill="#1E3A5F" opacity="0.8"/>
+          <rect x="51" y="28" width="10" height="5" rx="1" fill="#14532D" opacity="0.6"/>
+          <rect x="63" y="28" width="14" height="5" rx="1" fill="#78350F" opacity="0.8"/>
+          <rect x="3" y="35" width="10" height="5" rx="1" fill="#1E3A5F" opacity="0.6"/>
+          <rect x="15" y="35" width="10" height="5" rx="1" fill="#14532D" opacity="0.8"/>
+          <rect x="27" y="35" width="10" height="5" rx="1" fill="#14532D" opacity="0.5"/>
+          <rect x="39" y="35" width="10" height="5" rx="1" fill="#7C2D12" opacity="0.6"/>
+          <rect x="51" y="35" width="10" height="5" rx="1" fill="#1E3A5F" opacity="0.9"/>
+          <rect x="63" y="35" width="14" height="5" rx="1" fill="#14532D" opacity="0.7"/>
+          <rect x="3" y="43" width="74" height="4" rx="1" fill="#1E293B" opacity="0.6"/>
+        </svg>""",
+        "board_pack": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="56" rx="3" fill="#0B1220"/>
+          <rect x="0" y="0" width="80" height="10" rx="3" fill="#1E293B"/>
+          <rect x="3" y="2" width="40" height="3" rx="1" fill="#93C5FD" opacity="0.8"/>
+          <rect x="3" y="6" width="25" height="2" rx="1" fill="#6B7280"/>
+          <rect x="3" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
+          <rect x="22" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
+          <rect x="41" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
+          <rect x="60" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
+          <circle cx="18" cy="38" r="10" fill="none" stroke="#1F2937" stroke-width="4"/>
+          <circle cx="18" cy="38" r="10" fill="none" stroke="#3B82F6" stroke-width="4" stroke-dasharray="32 31" stroke-dashoffset="-6"/>
+          <circle cx="18" cy="38" r="10" fill="none" stroke="#10B981" stroke-width="4" stroke-dasharray="20 43" stroke-dashoffset="-38"/>
+          <rect x="32" y="28" width="45" height="3" rx="1" fill="#374151"/>
+          <rect x="32" y="33" width="38" height="3" rx="1" fill="#374151"/>
+          <rect x="32" y="40" width="45" height="8" rx="2" fill="#1E3A5F" opacity="0.6"/>
+          <rect x="34" y="42" width="40" height="2" rx="1" fill="#93C5FD" opacity="0.5"/>
+          <rect x="34" y="45" width="30" height="2" rx="1" fill="#6B7280" opacity="0.5"/>
+        </svg>""",
+    }
+
+    tmpl_cols = st.columns(5, gap="small")
+    for col, (tk, td) in zip(tmpl_cols, CARD_TEMPLATES.items()):
+        is_sel  = st.session_state.card_template == tk
+        border  = "#F59E0B" if is_sel else "#374151"
+        lbl_col = "#F59E0B" if is_sel else "#E5E7EB"
+        tick    = "✓ " if is_sel else ""
+        col.markdown(
+            f'<div style="border:2.5px solid {border};border-radius:10px;'
+            f'padding:8px 6px;text-align:center;background:#0F172A;">'
+            f'{_TMPL_WIREFRAMES[tk]}'
+            f'<div style="font-size:10px;font-weight:800;color:{lbl_col};'
+            f'margin-top:6px;line-height:1.2;">{tick}{td["label"]}</div>'
+            f'<div style="font-size:8px;color:#6B7280;margin-top:3px;line-height:1.3;">'
+            f'{td["tagline"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if col.button("Active ✓" if is_sel else "Select",
+                      key=f"tmpl_{tk}", use_container_width=True,
+                      type="primary" if is_sel else "secondary"):
+            st.session_state.card_template = tk
+            _clear_preview()
+            st.rerun()
 
     st.divider()
 
@@ -3797,7 +3908,6 @@ def step_preview_card():
                     st.error(f"Preview generation failed: {e}")
         else:
             st.info("No data loaded — showing a sample card. Go back to Step 2 to upload your file.", icon="ℹ️")
-            # Dynamic sample — uses first detected KPI names if available
             _kpi_names = [k["user_name"] for k in kpis_cfg] if kpis_cfg else ["Revenue", "Profit", "Orders", "Margin"]
             _sample_kpis = {}
             _sample_vals = [12847, 3341, 47, 26.0]
@@ -3847,8 +3957,8 @@ def step_preview_card():
             components.html(html_page, height=430, scrolling=False)
         else:
             st.warning(
-                "Card preview unavailable in this environment — "
-                "the card renders correctly when the full pipeline runs.",
+                "Card preview unavailable — check that matplotlib is installed "
+                "(pip install matplotlib). The card renders correctly when the full pipeline runs.",
                 icon="⚠️",
             )
 
@@ -3861,7 +3971,7 @@ def step_preview_card():
         meta_col.caption(
             f"Style: **{style_label}** · Template: **{template_label}** · "
             f"Role: **{role_cfg.get('title','—')}** · "
-            f"Window: **{_atf['label']}** · "
+            f"Window: **{_atf['label'] if _atf else 'Custom'}** · "
             f"Engine: **{narr.get('model','stub')}** · "
             f"Drivers: **{len(m.get('drivers',[]))}**"
         )
