@@ -1,42 +1,24 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ARIA — Role Profiles
-# ═══════════════════════════════════════════════════════════════════════════════
-# Each role controls three things:
-#   1. KPI focus   — which metrics appear on the card and which is the hero number
-#   2. Narrative   — tone + tier that ARIA uses when writing the briefing
-#   3. Card design — badge text and accent colour (visually distinct per role)
-#
-# TIERS drive vocabulary inside narrative_generator.py:
-#   c_suite    → strategic, board-level, risk framing
-#   leadership → cross-functional, bridge strategy↔execution
-#   commercial → deal-oriented, region/segment-specific, urgent
-#   operations → units & orders, fulfilment, process-fix language
-#   management → granular, team-actionable, today-focused
-#
-# slack_channel: leave blank ("") if unused.
-# To add a new role: copy any block, change the key and fields. Done.
+# ARIA — Role Profiles (Airways / Lufthansa Dataset)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 roles:
-
-  # ── C-Suite ──────────────────────────────────────────────────────────────── #
 
   CEO:
     title: "Chief Executive Officer"
     badge: "CEO  ·  EXECUTIVE BRIEFING"
     slack_channel: "C0B5U431C3U"
     tier: "c_suite"
-    primary_kpi: "Sales"
-    kpis: ["Sales", "Profit", "Orders", "Margin%"]
-    accent_color: "#F59E0B"        # amber — authority
-    driver_focus: ["Category", "Region"]
+    primary_kpi: "Revenue"
+    kpis: ["Revenue", "Profit", "Passengers", "Margin"]
+    accent_color: "#F59E0B"
+    driver_focus: ["Route", "Region"]
     tone: >
-      Strategic and big-picture. The CEO wants to know if the business is growing,
-      if margins are healthy, and where the biggest risk or opportunity is.
-      Lead with top-line revenue, then profitability. One sharp strategic insight
-      per section. Zero operational detail. If there is a tension between growth
-      and margin, name it directly. Frame every data point in terms of shareholder
-      value or competitive positioning.
+      Strategic and big-picture. The CEO wants to know if the airline is growing
+      revenue, if margins are healthy, and where the biggest risk or opportunity is.
+      Lead with Revenue, then Profit and Margin. One sharp strategic insight per
+      section — route profitability, load factor trends, or fuel cost pressure.
+      Frame every data point in terms of network value or competitive positioning.
 
   CFO:
     title: "Chief Financial Officer"
@@ -44,195 +26,67 @@ roles:
     slack_channel: "C0B6A6HJLJH"
     tier: "c_suite"
     primary_kpi: "Profit"
-    kpis: ["Profit", "Margin%", "Sales", "Orders"]
-    accent_color: "#10B981"        # emerald — financial precision
-    driver_focus: ["Category", "Region", "Segment"]
+    kpis: ["Profit", "Margin", "Revenue", "Fuel Cost"]
+    accent_color: "#10B981"
+    driver_focus: ["Route", "Region"]
     tone: >
-      Numbers-first. The CFO cares about margin health, cost discipline, and
-      profitability drivers more than top-line growth. Flag any margin compression
-      immediately. Lead with Profit and Margin%, then contextualise with Sales.
-      One financial risk and one financial opportunity per briefing. Speak in
-      basis points when margins are tight. Zero operational language.
+      Numbers-first. The CFO cares about margin health, fuel cost discipline,
+      and profitability drivers. Flag any margin compression or fuel cost spikes
+      immediately. Lead with Profit and Margin, then contextualise with Revenue.
+      One financial risk and one financial opportunity per briefing.
 
   COO:
     title: "Chief Operating Officer"
     badge: "COO  ·  OPERATIONS BRIEFING"
     slack_channel: ""
     tier: "operations"
-    primary_kpi: "Orders"
-    kpis: ["Orders", "Quantity", "AOV", "Sales"]
-    accent_color: "#2DD4BF"        # teal — operational precision
-    driver_focus: ["Ship Mode", "Sub-Category", "Region"]
+    primary_kpi: "Passengers"
+    kpis: ["Passengers", "Load Factor", "Avg Delay", "Active Routes"]
+    accent_color: "#2DD4BF"
+    driver_focus: ["Route", "Origin", "Destination"]
     tone: >
-      Efficiency-focused and process-oriented. The COO cares about order volume,
-      fulfilment throughput, and shipping performance above all else. Surface any
-      Ship Mode anomalies or Quantity bottlenecks. Speak in units and orders, not
-      dollars. One operational fix with a clear owner, a clear timeline, and a
-      measurable expected impact on throughput. Avoid revenue language unless it
-      is the direct consequence of an operations failure.
-
-  CTO:
-    title: "Chief Technology Officer"
-    badge: "CTO  ·  TECHNOLOGY BRIEFING"
-    slack_channel: ""
-    tier: "c_suite"
-    primary_kpi: "Orders"
-    kpis: ["Orders", "Sales", "Quantity", "Margin%"]
-    accent_color: "#8B5CF6"        # violet — systems thinking
-    driver_focus: ["Ship Mode", "Sub-Category", "Region"]
-    tone: >
-      Systems-thinking and process-focused. The CTO looks for data quality issues,
-      process breaks, and anomalies that suggest infrastructure or pipeline problems.
-      Surface any z-score spikes with a hypothesis about root cause — data lag,
-      ETL failure, or genuine demand shift. One technical fix with a measurable
-      business impact. Frame recommendations in terms of reliability and scale.
-
-  # ── Leadership ────────────────────────────────────────────────────────────── #
+      Efficiency-focused. The COO cares about passenger throughput, load factor,
+      on-time performance, and delay management. Surface any route anomalies or
+      delay spikes. One operational fix with a clear owner and measurable impact.
 
   VP:
     title: "Vice President"
     badge: "VP  ·  LEADERSHIP BRIEFING"
     slack_channel: "C0B5S26QBDL"
     tier: "leadership"
-    primary_kpi: "Sales"
-    kpis: ["Sales", "Profit", "Orders", "Quantity"]
-    accent_color: "#A78BFA"        # purple — cross-functional
-    driver_focus: ["Category", "Region", "Segment"]
+    primary_kpi: "Revenue"
+    kpis: ["Revenue", "Profit", "Passengers", "Load Factor"]
+    accent_color: "#A78BFA"
+    driver_focus: ["Route", "Region", "Origin"]
     tone: >
-      Balanced cross-functional view. The VP bridges strategic direction and
-      operational execution. Cover both growth and efficiency in one narrative.
-      Surface any tension between revenue momentum and margin health. Recommend
-      one action that spans at least two functions. Confident, measured — no alarm,
-      no complacency. Flag what might escalate to the C-Suite if unresolved.
-
-  Director:
-    title: "Director"
-    badge: "DIRECTOR  ·  LEADERSHIP BRIEFING"
-    slack_channel: ""
-    tier: "leadership"
-    primary_kpi: "Sales"
-    kpis: ["Sales", "Profit", "Orders", "Margin%"]
-    accent_color: "#F472B6"        # pink — decisive
-    driver_focus: ["Category", "Sub-Category", "Region"]
-    tone: >
-      Execution-focused. The Director wants to know what is working, what is
-      stalling, and what the team should do about it this week. Bridge the strategy
-      from the VP brief down to team-level priority. One clear priority for the
-      week — not three, not five. Name the owner and the deadline. Escalate only
-      what truly needs C-Suite attention.
-
-  Associate Director:
-    title: "Associate Director"
-    badge: "ASSOC DIR  ·  BRIEFING"
-    slack_channel: ""
-    tier: "leadership"
-    primary_kpi: "Sales"
-    kpis: ["Sales", "Orders", "Margin%", "AOV"]
-    accent_color: "#FB923C"        # orange — tactical urgency
-    driver_focus: ["Sub-Category", "Region", "Segment"]
-    tone: >
-      Tactical and specific. The Associate Director operates at sub-category and
-      segment level. Surface what to escalate up (to Director) and what to fix
-      now (with the team). Name specific sub-categories, regions, and segments.
-      Two clear tasks: one to escalate, one to action today. No strategic framing.
+      Balanced cross-functional view. Cover both revenue growth and load factor
+      efficiency. Surface any tension between network expansion and margin health.
+      Recommend one action spanning at least two functions.
 
   Sales Head:
     title: "Sales Head"
     badge: "SALES  ·  COMMERCIAL BRIEFING"
     slack_channel: "C0B5XN2Q5TN"
     tier: "commercial"
-    primary_kpi: "Sales"
-    kpis: ["Sales", "Orders", "AOV", "Margin%"]
-    accent_color: "#60A5FA"        # blue — momentum
-    driver_focus: ["Sub-Category", "Region", "Segment"]
+    primary_kpi: "Revenue"
+    kpis: ["Revenue", "Passengers", "Load Factor", "Margin"]
+    accent_color: "#60A5FA"
+    driver_focus: ["Route", "Destination", "Region"]
     tone: >
-      Action-oriented and commercial. The Sales Head wants to know what is moving,
-      what is stalling, and where to push harder today. Be verb-heavy and urgent.
-      Name specific regions, sub-categories, and customer segments. Give them one
-      clear commercial move to make before end of day. Do not talk about costs or
-      margins unless they are the root cause of a revenue miss.
-
-  # ── Management ────────────────────────────────────────────────────────────── #
-
-  Senior Manager:
-    title: "Senior Manager"
-    badge: "SR MANAGER  ·  BRIEFING"
-    slack_channel: ""
-    tier: "management"
-    primary_kpi: "Sales"
-    kpis: ["Sales", "Orders", "Quantity", "AOV"]
-    accent_color: "#34D399"        # green — team momentum
-    driver_focus: ["Sub-Category", "Segment", "Region"]
-    tone: >
-      Team-level detail. The Senior Manager wants to know which specific products
-      or customer groups are moving the number — not macro trends. Lead with the
-      sub-category or segment that is driving the delta. One actionable
-      recommendation the team can act on this week, with a clear owner name.
-      Quantify the expected impact at the team level, not company level.
-
-  Manager:
-    title: "Manager"
-    badge: "MANAGER  ·  BRIEFING"
-    slack_channel: ""
-    tier: "management"
-    primary_kpi: "Orders"
-    kpis: ["Orders", "Sales", "Quantity", "AOV"]
-    accent_color: "#22D3EE"        # cyan — ground-level clarity
-    driver_focus: ["Sub-Category", "Segment", "Ship Mode"]
-    tone: >
-      Ground-level detail. The Manager needs specifics: which products, which
-      shipments, which customer groups. Give them two actionable tasks the team
-      can complete today — not this week, today. No strategic framing. No abstract
-      language. If there is a delay or a bottleneck, name it and tell them who
-      to call. If there is a win, tell them to amplify it before close of business.
-
-  Team Lead:
-    title: "Team Lead"
-    badge: "TEAM LEAD  ·  BRIEFING"
-    slack_channel: ""
-    tier: "management"
-    primary_kpi: "Orders"
-    kpis: ["Orders", "Quantity", "Sales", "AOV"]
-    accent_color: "#A3E635"        # lime — operational energy
-    driver_focus: ["Sub-Category", "Ship Mode", "Segment"]
-    tone: >
-      Operational and granular. The Team Lead needs to know what is shipping,
-      what is delayed, and what needs attention in the next few hours. No
-      strategy, no jargon — just the facts and the next step. Two tasks maximum.
-      Name the specific SKU, route, or customer group. If a number is down,
-      say which one and by how much. If a number is up, say why and how to
-      keep it that way.
-
-  Business Analyst:
-    title: "Business Analyst"
-    badge: "BA  ·  ANALYSIS BRIEFING"
-    slack_channel: ""
-    tier: "management"
-    primary_kpi: "Sales"
-    kpis: ["Sales", "Profit", "Margin%", "Orders"]
-    accent_color: "#818CF8"        # indigo — analytical precision
-    driver_focus: ["Sub-Category", "Segment", "Region"]
-    tone: >
-      Data-driven and hypothesis-led. The Business Analyst needs signal, not noise.
-      Lead with the strongest anomaly or trend break, then state the most likely
-      root cause as a hypothesis with supporting data points. Call out any compound
-      signals (e.g. Sales up but Margin down) — these are your headline story.
-      One clear analytical recommendation with a defined success metric. Frame
-      every number with a comparison: vs yesterday, vs 7-day average, vs target.
-      Avoid management-speak — favour precise, quantified language.
+      Action-oriented and commercial. Name specific routes and destinations.
+      Give one clear commercial move before end of day — yield management action,
+      capacity reallocation, or a promotional push on a low-load route.
 
   Operations Head:
     title: "Operations Head"
     badge: "OPS  ·  OPERATIONS BRIEFING"
     slack_channel: "C0B5VUPPP4Z"
     tier: "operations"
-    primary_kpi: "Orders"
-    kpis: ["Orders", "Quantity", "AOV", "Sales"]
-    accent_color: "#2DD4BF"        # teal — precision
-    driver_focus: ["Ship Mode", "Sub-Category", "Region"]
+    primary_kpi: "Avg Delay"
+    kpis: ["Avg Delay", "Load Factor", "Passengers", "Fuel Cost"]
+    accent_color: "#2DD4BF"
+    driver_focus: ["Origin", "Destination", "Route"]
     tone: >
-      Efficiency-focused and process-oriented. The Operations Head cares about
-      order volume, fulfilment throughput, and shipping performance. Surface any
-      Ship Mode anomalies or Quantity bottlenecks. One operational fix with a
-      clear owner, a clear timeline, and a measurable expected impact. Avoid
-      revenue language — speak in units and orders.
+      Precision-focused. The Operations Head cares about on-time performance,
+      delay causes, fuel burn, and turnaround efficiency. One operational fix with
+      clear owner, timeline, and measurable impact on departure punctuality.
