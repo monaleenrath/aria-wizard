@@ -115,19 +115,19 @@ CARD_STYLES = {
     },
     "navy": {
         "label":   "🌊 Navy",
-        "tagline": "Deep navy — calm authority.",
-        "bg":      "#0A1628",
-        "surface": "#0F2040",
+        "tagline": "Classic navy — calm authority.",
+        "bg":      "#1B3B6F",
+        "surface": "#1E4A8A",
         "accent_override": None,
-        "swatch":  "#0A1628",
+        "swatch":  "#1B3B6F",
     },
     "grey": {
         "label":   "🩶 Grey",
-        "tagline": "Cool slate — neutral corporate feel.",
-        "bg":      "#1A1F2E",
-        "surface": "#252B3B",
+        "tagline": "Light slate — clean corporate feel.",
+        "bg":      "#D8DEE9",
+        "surface": "#C8D0E0",
         "accent_override": None,
-        "swatch":  "#1A1F2E",
+        "swatch":  "#D8DEE9",
     },
     "beige": {
         "label":   "☀️ Beige",
@@ -447,7 +447,7 @@ HELP_CONTENT = {
             "1. Go to **[aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)**\n"
             "2. Sign in with your Google account\n"
             "3. Click **Create API key**\n"
-            "4. Copy the key — it starts with `AIza`\n\n"
+            "4. Copy the key and paste it below\n\n"
             "**Free tier limits:**\n"
             "- 1,500 requests/day\n"
             "- 15 requests/minute\n"
@@ -2863,16 +2863,16 @@ def render_progress():
         else:
             c, bg, tc, sym = "#374151", "transparent", "#6B7280", str(i)
         items += (
-            f'<div style="display:flex;flex-direction:column;align-items:center;min-width:52px">'
-            f'<div style="width:28px;height:28px;border-radius:50%;background:{bg};border:2px solid {c};'
-            f'display:flex;align-items:center;justify-content:center;color:{tc};font-size:11px;'
-            f'font-weight:700;margin-bottom:4px">{sym}</div>'
-            f'<div style="font-size:9px;color:{tc};text-align:center;line-height:1.2;max-width:50px">{label}</div>'
+            f'<div style="display:flex;flex-direction:column;align-items:center;min-width:64px">'
+            f'<div style="width:36px;height:36px;border-radius:50%;background:{bg};border:2.5px solid {c};'
+            f'display:flex;align-items:center;justify-content:center;color:{tc};font-size:13px;'
+            f'font-weight:700;margin-bottom:5px">{sym}</div>'
+            f'<div style="font-size:11px;color:{tc};text-align:center;line-height:1.3;max-width:60px">{label}</div>'
             f'</div>'
         )
         if i < TOTAL_STEPS:
             lc = "#10B981" if i < step else "#374151"
-            items += f'<div style="flex:1;height:2px;background:{lc};margin:14px 2px 0"></div>'
+            items += f'<div style="flex:1;height:2px;background:{lc};margin:18px 2px 0"></div>'
     st.markdown(
         f'<div style="display:flex;align-items:flex-start;padding:16px 0 24px;overflow-x:auto">{items}</div>',
         unsafe_allow_html=True,
@@ -3432,7 +3432,7 @@ def step_choose_ai():
         with ki2:
             help_tip("gemini_key")
         kv = st.text_input("Paste key here (stored as a GitHub Secret, not locally)",
-                            type="password", placeholder="AIza...", key="gemini_key_input")
+                            type="password", placeholder="Paste your Gemini API key here", key="gemini_key_input")
         if kv:
             st.session_state.gemini_key = kv
         if not st.session_state.get("gemini_key") and not kv:
@@ -3604,8 +3604,9 @@ def step_preview_card():
         is_sel  = st.session_state.card_style == sk
         swatch  = sd["swatch"]
         border  = "#F59E0B" if is_sel else "#374151"
-        txt_col = "#F59E0B" if is_sel else ("#111111" if sk == "beige" else "#E5E7EB")
-        sub_col = "#888" if sk == "beige" else "#9CA3AF"
+        _light_bg = sk in ("beige", "grey")
+        txt_col = "#F59E0B" if is_sel else ("#111111" if _light_bg else "#E5E7EB")
+        sub_col = "#555" if _light_bg else "#9CA3AF"
         # Tick badge for selected
         tick = '<div style="font-size:11px;color:#F59E0B;font-weight:900;margin-top:4px;">✓ Selected</div>' if is_sel else ""
         col.markdown(
@@ -3967,15 +3968,15 @@ def step_preview_card():
         style_label    = CARD_STYLES[st.session_state.card_style]["label"]
         template_label = CARD_TEMPLATES[st.session_state.card_template]["label"]
         _atf = _tf_by_key(st.session_state.get("timeframe_key", "30d"))
-        meta_col, regen_col = st.columns([4, 1])
-        meta_col.caption(
+        st.caption(
             f"Style: **{style_label}** · Template: **{template_label}** · "
             f"Role: **{role_cfg.get('title','—')}** · "
             f"Window: **{_atf['label'] if _atf else 'Custom'}** · "
             f"Engine: **{narr.get('model','stub')}** · "
             f"Drivers: **{len(m.get('drivers',[]))}**"
         )
-        if regen_col.button("🔄 Refresh", use_container_width=True):
+        _r1, _r2 = st.columns([3, 1])
+        if _r2.button("🔄 Refresh", use_container_width=True):
             _clear_preview()
             st.rerun()
 
@@ -4148,7 +4149,7 @@ def _render_key_inputs(provider: str, channels: list):
         gemini_key = g1.text_input(
             "Gemini API key",
             type="password",
-            placeholder="AIza...",
+            placeholder="Paste your Gemini API key here",
             key="gemini_key_launch",
             value=st.session_state.get("gemini_key", ""),
         )
@@ -4779,7 +4780,44 @@ def main():
       [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {
           gap: 4px !important;
       }
+
+      /* ── Hide card-selector "Select" / "Active ✓" buttons — JS makes them invisible ── */
+      .aria-selector-hidden {
+          height: 4px !important;
+          min-height: 4px !important;
+          max-height: 4px !important;
+          padding: 0 !important;
+          opacity: 0 !important;
+          overflow: hidden !important;
+          margin: 0 !important;
+          border: none !important;
+          cursor: pointer !important;
+      }
+
+      /* ── Custom time chip — prevent text wrapping ── */
+      button[data-testid="baseButton-secondary"] p,
+      button[data-testid="baseButton-primary"] p {
+          white-space: nowrap !important;
+      }
     </style>
+    <script>
+    (function() {
+      // Invisibly collapse "Select" and "Active ✓" card-selector buttons
+      // while keeping them clickable (opacity:0 not display:none)
+      const HIDE = new Set(['Select', 'Active ✓', 'Active ✓']);
+      function applyStyles() {
+        document.querySelectorAll('button').forEach(function(btn) {
+          var txt = (btn.innerText || '').trim();
+          if (HIDE.has(txt)) {
+            btn.classList.add('aria-selector-hidden');
+          }
+        });
+      }
+      var obs = new MutationObserver(applyStyles);
+      obs.observe(document.body, { childList: true, subtree: true });
+      applyStyles();
+    })();
+    </script>
     """, unsafe_allow_html=True)
 
     # ── Auth gate ── show login screen if not logged in ──────────────────────
