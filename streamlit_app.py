@@ -864,8 +864,8 @@ def screen_auth():
     </style>
     <div style="text-align:center;padding:24px 0 12px">
       <div style="font-size:56px;margin-bottom:8px">⚡</div>
-      <h1 style="font-size:52px;font-weight:900;letter-spacing:6px;margin:0;color:#FFFFFF">ARIA</h1>
-      <p style="font-size:14px;color:#9CA3AF;margin:8px 0 0;letter-spacing:1px">
+      <h1 style="font-size:52px;font-weight:900;letter-spacing:6px;margin:0;color:#F59E0B">ARIA</h1>
+      <p style="font-size:14px;color:#6B7280;margin:8px 0 0;letter-spacing:1px">
         Autonomous Report &amp; Insight AI Agent
       </p>
     </div>
@@ -3333,7 +3333,7 @@ def step_pick_role():
                 bg      = f"{rd['accent_color']}18" if is_sel else "transparent"
                 col.markdown(
                     f'<div style="border:2px solid {border};background:{bg};border-radius:10px;'
-                    f'padding:14px 16px;margin-bottom:6px;min-height:88px">'
+                    f'padding:14px 16px;margin-bottom:10px;min-height:88px">'
                     f'<div style="font-weight:700;font-size:13px;margin-bottom:3px">{role_key}</div>'
                     f'<div style="font-size:11px;color:#9CA3AF;margin-bottom:6px">{rd["title"]}</div>'
                     f'<div style="font-size:10px;color:{rd["accent_color"]}">'
@@ -3612,7 +3612,7 @@ def step_preview_card():
         col.markdown(
             f'<div style="border:2.5px solid {border};border-radius:10px;'
             f'padding:12px 8px;text-align:center;height:110px;box-sizing:border-box;'
-            f'background:{swatch};cursor:pointer;">'
+            f'background:{swatch};cursor:pointer;margin-bottom:6px;">'
             f'<div style="font-size:13px;font-weight:800;color:{txt_col};'
             f'line-height:1.2;margin-top:4px;">{sd["label"]}</div>'
             f'<div style="font-size:9px;color:{sub_col};margin-top:5px;line-height:1.4;">'
@@ -3621,7 +3621,7 @@ def step_preview_card():
             f'</div>',
             unsafe_allow_html=True,
         )
-        if col.button("Active ✓" if is_sel else "Select",
+        if col.button("✓ Selected" if is_sel else "Select",
                       key=f"sty_{sk}", use_container_width=True,
                       type="primary" if is_sel else "secondary"):
             st.session_state.card_style = sk
@@ -3676,7 +3676,7 @@ def step_preview_card():
 
     # Single chip row — one button per timeframe, NO duplicate markdown row above
     _use_custom = st.session_state.get("timeframe_key") == "custom"
-    tf_cols = st.columns(len(TIMEFRAME_OPTIONS) + 1)  # +1 for Custom
+    tf_cols = st.columns([1] * len(TIMEFRAME_OPTIONS) + [1.5])  # Custom gets extra width
     for col, tf in zip(tf_cols, TIMEFRAME_OPTIONS):
         is_sel = current_tf == tf["key"] and not _use_custom
         is_dis = not _tf_available(tf)
@@ -3863,7 +3863,7 @@ def step_preview_card():
         tick    = "✓ " if is_sel else ""
         col.markdown(
             f'<div style="border:2.5px solid {border};border-radius:10px;'
-            f'padding:8px 6px;text-align:center;background:#0F172A;">'
+            f'padding:8px 6px;text-align:center;background:#0F172A;margin-bottom:6px;">'
             f'{_TMPL_WIREFRAMES[tk]}'
             f'<div style="font-size:10px;font-weight:800;color:{lbl_col};'
             f'margin-top:6px;line-height:1.2;">{tick}{td["label"]}</div>'
@@ -3872,7 +3872,7 @@ def step_preview_card():
             f'</div>',
             unsafe_allow_html=True,
         )
-        if col.button("Active ✓" if is_sel else "Select",
+        if col.button("✓ Selected" if is_sel else "Select",
                       key=f"tmpl_{tk}", use_container_width=True,
                       type="primary" if is_sel else "secondary"):
             st.session_state.card_template = tk
@@ -4794,17 +4794,22 @@ def main():
           cursor: pointer !important;
       }
 
-      /* ── Custom time chip — prevent text wrapping ── */
+      /* ── Time period chips — prevent text wrapping ── */
       button[data-testid="baseButton-secondary"] p,
       button[data-testid="baseButton-primary"] p {
           white-space: nowrap !important;
+          overflow: visible !important;
+      }
+      button[data-testid="baseButton-secondary"],
+      button[data-testid="baseButton-primary"] {
+          overflow: visible !important;
       }
     </style>
     <script>
     (function() {
       // Invisibly collapse "Select" and "Active ✓" card-selector buttons
       // while keeping them clickable (opacity:0 not display:none)
-      const HIDE = new Set(['Select', 'Active ✓', 'Active ✓']);
+      const HIDE = new Set(['Select', '✓ Selected']);
       function applyStyles() {
         document.querySelectorAll('button').forEach(function(btn) {
           var txt = (btn.innerText || '').trim();
