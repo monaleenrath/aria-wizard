@@ -103,46 +103,78 @@ STEP_LABELS = [
 # CARD ACCENT THEMES
 # ════════════════════════════════════════════════════════════════════════════════
 
+# ── Card visual styles (4 distinct background palettes) ────────────────────────
 CARD_STYLES = {
-    "role_accent": {
-        "label":    "🎨 Role Accent",
-        "tagline":  "Colour pulled from your selected role.",
-        "bg":       "#0B1220",
-        "surface":  "#111827",
+    "dark": {
+        "label":   "🌑 Dark",
+        "tagline": "Editorial dark — the original ARIA look.",
+        "bg":      "#0B1220",
+        "surface": "#111827",
         "accent_override": None,
-        "swatch":   "linear-gradient(135deg, #0B1220 50%, #F59E0B 50%)",
+        "swatch":  "#0B1220",
     },
-    "crimson": {
-        "label":    "🔴 Crimson",
-        "tagline":  "Bold red — urgency and decisive action.",
-        "bg":       "#0B1220",
-        "surface":  "#111827",
-        "accent_override": "#EF4444",
-        "swatch":   "linear-gradient(135deg, #0B1220 50%, #EF4444 50%)",
+    "navy": {
+        "label":   "🌊 Navy",
+        "tagline": "Deep navy — calm authority.",
+        "bg":      "#0A1628",
+        "surface": "#0F2040",
+        "accent_override": None,
+        "swatch":  "#0A1628",
     },
-    "electric_blue": {
-        "label":    "🔵 Electric Blue",
-        "tagline":  "Cool blue — analytical, data-forward.",
-        "bg":       "#0A0E1A",
-        "surface":  "#111827",
-        "accent_override": "#60A5FA",
-        "swatch":   "linear-gradient(135deg, #0A0E1A 50%, #60A5FA 50%)",
+    "grey": {
+        "label":   "🩶 Grey",
+        "tagline": "Cool slate — neutral corporate feel.",
+        "bg":      "#1A1F2E",
+        "surface": "#252B3B",
+        "accent_override": None,
+        "swatch":  "#1A1F2E",
     },
-    "emerald": {
-        "label":    "🟢 Emerald",
-        "tagline":  "Green — growth story, positive momentum.",
-        "bg":       "#0B1220",
-        "surface":  "#111827",
-        "accent_override": "#34D399",
-        "swatch":   "linear-gradient(135deg, #0B1220 50%, #34D399 50%)",
+    "beige": {
+        "label":   "☀️ Beige",
+        "tagline": "Warm light — stands out in dark feeds.",
+        "bg":      "#F5F0E8",
+        "surface": "#EDE8DF",
+        "accent_override": None,
+        "swatch":  "#F5F0E8",
     },
-    "rose": {
-        "label":    "🌸 Rose",
-        "tagline":  "Pink — creative, stands out in the feed.",
-        "bg":       "#0B1220",
-        "surface":  "#111827",
-        "accent_override": "#F472B6",
-        "swatch":   "linear-gradient(135deg, #0B1220 50%, #F472B6 50%)",
+}
+
+# ── Card templates (5 distinct layouts) ────────────────────────────────────────
+CARD_TEMPLATES = {
+    "editorial": {
+        "label":    "📰 Editorial",
+        "tagline":  "Three-act: KPIs · Drivers · Action",
+        "desc":     "Hero number + sparkline trend, driver bar charts, action box. The original ARIA format.",
+        "chart":    "Sparkline",
+        "best_for": "CEO · CFO",
+    },
+    "scorecard": {
+        "label":    "🏆 Scorecard",
+        "tagline":  "KPI grid tiles + donut chart",
+        "desc":     "All KPIs at a glance with RAG status dots. Donut chart shows contribution mix.",
+        "chart":    "Donut",
+        "best_for": "CFO · VP",
+    },
+    "story_arc": {
+        "label":    "📖 Story Arc",
+        "tagline":  "Narrative-first + treemap",
+        "desc":     "Big pull-quote headline drives the story. Treemap shows proportional driver breakdown.",
+        "chart":    "Treemap",
+        "best_for": "CEO · Board",
+    },
+    "ops_dashboard": {
+        "label":    "⚡ Ops Dashboard",
+        "tagline":  "Traffic lights + heat map",
+        "desc":     "Traffic-light KPI tiles for instant RAG status. Heat map surfaces dimension patterns.",
+        "chart":    "Heat Map",
+        "best_for": "COO · Operations",
+    },
+    "board_pack": {
+        "label":    "🏛️ Board Pack",
+        "tagline":  "Formal slide with donut",
+        "desc":     "Clean board-presentation layout. Formal header, KPI row, donut, recommendation box.",
+        "chart":    "Donut",
+        "best_for": "Board · C-Suite",
     },
 }
 
@@ -2409,7 +2441,8 @@ def build_stub_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
 # SVG PREVIEW
 # ════════════════════════════════════════════════════════════════════════════════
 
-def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict, style_key: str) -> str | None:
+def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
+                         style_key: str, template_key: str = "editorial") -> str | None:
     try:
         from svg_generator import generate_svg
     except ImportError:
@@ -2418,32 +2451,24 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict, style_key
         except ImportError:
             return None
 
-    style    = CARD_STYLES.get(style_key, CARD_STYLES["role_accent"])
-    prim_kpi = role_cfg.get("primary_kpi", "Sales")
+    prim_kpi = role_cfg.get("primary_kpi") or next(iter(metrics.get("kpis", {})), "KPI")
     drivers  = metrics.get("drivers", [])
 
     payload = {
         "reference_date":  metrics.get("reference_date", str(date.today())),
         "kpis":            metrics.get("kpis", {}),
-        "drivers":         {prim_kpi: drivers, "Sales": drivers},
+        "drivers":         {prim_kpi: drivers},
         "daily_sales_30d": metrics.get("trend_series", []),
     }
 
     mod_role = dict(role_cfg)
-    if style.get("accent_override"):
-        mod_role["accent_color"] = style["accent_override"]
+    mod_role["card_template"] = template_key
+    mod_role["card_style"]    = style_key
 
     try:
         svg = generate_svg(narrative_obj, payload, {}, mod_role)
     except Exception:
         return None
-
-    bg      = style.get("bg", "#0B1220")
-    surface = style.get("surface", "#111827")
-    if bg != "#0B1220":
-        svg = svg.replace('fill="#0B1220"', f'fill="{bg}"', 1)
-    if surface != "#111827":
-        svg = svg.replace('fill="#111827"', f'fill="{surface}"')
 
     svg = svg.replace(
         '<svg viewBox="0 0 800 480"',
@@ -3551,32 +3576,41 @@ def step_set_delivery():
 # ════════════════════════════════════════════════════════════════════════════════
 
 def step_preview_card():
-    st.header("🎨 Preview Your Card")
+    st.header("🎨 Card Studio")
     st.caption(
-        "The card below is the **actual SVG** sent to Slack — not a mockup. "
-        "Choose an accent theme, then generate from your real data."
+        "Design your briefing card. Choose a style, pick a template, select your "
+        "time window — then preview the **actual card** that gets posted to Slack."
     )
 
     role_cfg = _resolve_role()
 
-    st.subheader("1. Choose Accent Theme")
-    if "card_style" not in st.session_state:
-        st.session_state.card_style = "role_accent"
+    # ────────────────────────────────────────────────────────────────────────── #
+    # 1. CHOOSE CARD STYLE (4 visual backgrounds)
+    # ────────────────────────────────────────────────────────────────────────── #
+    st.subheader("1. Choose Your Card Style")
 
-    style_cols = st.columns(5)
+    if "card_style" not in st.session_state:
+        st.session_state.card_style = "dark"
+
+    style_cols = st.columns(4)
     for col, (sk, sd) in zip(style_cols, CARD_STYLES.items()):
-        is_sel  = st.session_state.card_style == sk
-        preview_accent = sd.get("accent_override") or role_cfg.get("accent_color", "#F59E0B")
-        swatch = f"linear-gradient(135deg, {sd['bg']} 50%, {preview_accent} 50%)"
-        border = preview_accent if is_sel else "#374151"
+        is_sel = st.session_state.card_style == sk
+        accent = role_cfg.get("accent_color", "#F59E0B")
+        border = accent if is_sel else "#374151"
+        swatch = sd["swatch"]
+        # Swatch: show background colour with role accent stripe
         col.markdown(
-            f'<div style="border:2.5px solid {border};border-radius:10px;padding:10px 8px;'
-            f'text-align:center;margin-bottom:8px">'
-            f'<div style="width:100%;height:34px;border-radius:6px;'
-            f'background:{swatch};margin-bottom:7px"></div>'
-            f'<div style="font-size:11px;font-weight:700;color:{"#F59E0B" if is_sel else "var(--color-text-primary)"}">'
+            f'<div style="border:2.5px solid {border};border-radius:10px;'
+            f'padding:10px 8px;text-align:center;margin-bottom:8px;">'
+            f'<div style="width:100%;height:40px;border-radius:6px;'
+            f'background:{swatch};margin-bottom:7px;position:relative;overflow:hidden;">'
+            f'<div style="position:absolute;right:0;top:0;width:35%;height:100%;'
+            f'background:{accent};opacity:0.85;"></div>'
+            f'</div>'
+            f'<div style="font-size:11px;font-weight:700;'
+            f'color:{"#F59E0B" if is_sel else "var(--color-text-primary)"};">'
             f'{sd["label"]}</div>'
-            f'<div style="font-size:9px;color:#9CA3AF;margin-top:3px;line-height:1.3">'
+            f'<div style="font-size:9px;color:#9CA3AF;margin-top:3px;line-height:1.3;">'
             f'{sd["tagline"]}</div></div>',
             unsafe_allow_html=True,
         )
@@ -3589,54 +3623,91 @@ def step_preview_card():
 
     st.divider()
 
-    # ── Timeframe question — user must actively choose ─────────────────────── #
-    st.subheader("2. What time period should this card cover?")
+    # ────────────────────────────────────────────────────────────────────────── #
+    # 2. CHOOSE CARD TEMPLATE (5 distinct layouts)
+    # ────────────────────────────────────────────────────────────────────────── #
+    st.subheader("2. Choose Your Card Template")
+
+    if "card_template" not in st.session_state:
+        st.session_state.card_template = "editorial"
+
+    tmpl_cols = st.columns(5)
+    for col, (tk, td) in zip(tmpl_cols, CARD_TEMPLATES.items()):
+        is_sel = st.session_state.card_template == tk
+        accent = role_cfg.get("accent_color", "#F59E0B")
+        border = accent if is_sel else "#374151"
+        col.markdown(
+            f'<div style="border:2.5px solid {border};border-radius:10px;'
+            f'padding:10px 8px;text-align:center;margin-bottom:8px;min-height:120px;">'
+            f'<div style="font-size:11px;font-weight:700;'
+            f'color:{"#F59E0B" if is_sel else "var(--color-text-primary)"};">'
+            f'{td["label"]}</div>'
+            f'<div style="font-size:9px;color:#9CA3AF;margin-top:4px;line-height:1.3;">'
+            f'{td["tagline"]}</div>'
+            f'<div style="font-size:8px;color:#60A5FA;margin-top:6px;font-weight:600;">'
+            f'📊 {td["chart"]}</div>'
+            f'<div style="font-size:8px;color:#6B7280;margin-top:3px;">'
+            f'Best for: {td["best_for"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if col.button("✓ Active" if is_sel else "Choose",
+                      key=f"tmpl_{tk}", use_container_width=True,
+                      type="primary" if is_sel else "secondary"):
+            st.session_state.card_template = tk
+            _clear_preview()
+            st.rerun()
+
+    st.divider()
+
+    # ────────────────────────────────────────────────────────────────────────── #
+    # 3. TIME PERIOD — compact chips with hover tooltips + min/max date banner
+    # ────────────────────────────────────────────────────────────────────────── #
+    st.subheader("3. Time Period")
+
     role_now       = st.session_state.get("role_name", "")
     role_suggested = ROLE_TIMEFRAME_DEFAULTS.get(role_now, "")
-    current_tf     = st.session_state.get("timeframe_key")   # None = not yet chosen
+    current_tf     = st.session_state.get("timeframe_key")
 
-    # ── Compute which timeframes are valid based on data's max date ───────── #
-    _df_preview  = st.session_state.get("df")
-    _date_col_p  = st.session_state.get("date_col")
-    _today       = date.today()
-    _max_data_dt = None
+    _df_preview    = st.session_state.get("df")
+    _date_col_p    = st.session_state.get("date_col")
+    _today         = date.today()
+    _min_data_dt   = None
+    _max_data_dt   = None
     _data_gap_days = 0
 
     if _df_preview is not None and _date_col_p and _date_col_p in _df_preview.columns:
         try:
-            _max_data_dt   = pd.to_datetime(_df_preview[_date_col_p], errors="coerce").dt.date.max()
+            _parsed      = pd.to_datetime(_df_preview[_date_col_p], errors="coerce").dt.date
+            _min_data_dt = _parsed.min()
+            _max_data_dt = _parsed.max()
             _data_gap_days = (_today - _max_data_dt).days
         except Exception:
-            _max_data_dt = None
+            _min_data_dt = _max_data_dt = None
 
-    def _tf_available(tf: dict) -> bool:
-        """True if the data has enough history to support this timeframe."""
-        if _max_data_dt is None:
-            return True  # no df yet — don't block anything
-        key = tf["key"]
-        if key in ("alltime", "ytd"):
-            return True
-        days_needed = tf.get("days", 1)
-        # Need at least 'days_needed' days of data before max_date
-        _dmin = pd.to_datetime(_df_preview[_date_col_p], errors="coerce").dt.date.min()
-        return (_max_data_dt - _dmin).days >= days_needed
-
-    # Show data staleness banner when data is not current
-    if _max_data_dt is not None and _data_gap_days > 1:
+    # Data range banner (min + max dates)
+    if _min_data_dt and _max_data_dt:
         st.info(
-            f"📅 Your data goes up to **{_max_data_dt.strftime('%b %d, %Y')}** "
-            f"({_data_gap_days} days ago). "
-            f"Timeframes that need more recent data are disabled. "
-            f"The preview will reflect the most recent period available in your file.",
+            f"📅 Your data runs **{_min_data_dt.strftime('%b %d, %Y')}** → "
+            f"**{_max_data_dt.strftime('%b %d, %Y')}** "
+            f"({_data_gap_days} days ago). Timeframes with insufficient history are disabled.",
             icon="ℹ️",
         )
 
-    # Auto-select best valid timeframe if none chosen yet
+    def _tf_available(tf: dict) -> bool:
+        if _max_data_dt is None:
+            return True
+        if tf["key"] in ("alltime", "ytd"):
+            return True
+        days_needed = tf.get("days", 1)
+        if _min_data_dt is None:
+            return True
+        return (_max_data_dt - _min_data_dt).days >= days_needed
+
+    # Auto-select best valid timeframe
     if not current_tf and _max_data_dt is not None:
-        # Pick the role-suggested tf if valid, else fall back down the list
-        _candidates = (
-            [role_suggested] if role_suggested else []
-        ) + [tf["key"] for tf in TIMEFRAME_OPTIONS]
+        _candidates = ([role_suggested] if role_suggested else []) + \
+                      [tf["key"] for tf in TIMEFRAME_OPTIONS]
         for _cand in _candidates:
             _cand_tf = _tf_by_key(_cand)
             if _tf_available(_cand_tf):
@@ -3644,80 +3715,64 @@ def step_preview_card():
                 current_tf = _cand
                 break
 
-    # Build 4-column rows of option cards
-    _tf_rows = [TIMEFRAME_OPTIONS[i:i+4] for i in range(0, len(TIMEFRAME_OPTIONS), 4)]
-    for row_opts in _tf_rows:
-        cols = st.columns(len(row_opts))
-        for col, tf in zip(cols, row_opts):
-            is_sel      = current_tf == tf["key"]
-            is_suggest  = (role_suggested == tf["key"])
-            is_disabled = not _tf_available(tf)
-            border_col  = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_disabled else ("#374151" if not is_disabled else "#1F2937"))
-            bg_col      = "#1C2A1A" if is_sel else ("#1A2233" if is_suggest and not is_disabled else ("#111827" if not is_disabled else "#0D1117"))
-            label_col   = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_disabled else ("#D1D5DB" if not is_disabled else "#374151"))
-            desc_col    = "#6B7280" if not is_disabled else "#1F2937"
-            badge_html  = (
-                '<div style="font-size:9px;color:#F59E0B;font-weight:700;'
-                'background:#F59E0B20;border-radius:4px;padding:1px 6px;'
-                'margin-top:4px;display:inline-block">✓ SELECTED</div>'
-                if is_sel else (
-                '<div style="font-size:9px;color:#4B5563;font-weight:700;'
-                'background:#1F293720;border-radius:4px;padding:1px 6px;'
-                'margin-top:4px;display:inline-block">✗ NO DATA</div>'
-                if is_disabled else (
-                '<div style="font-size:9px;color:#60A5FA;font-weight:700;'
-                'background:#60A5FA20;border-radius:4px;padding:1px 6px;'
-                'margin-top:4px;display:inline-block">★ SUGGESTED</div>'
-                if is_suggest else ""))
-            )
-            col.markdown(
-                f'<div style="background:{bg_col};border:2px solid {border_col};'
-                f'border-radius:12px;padding:14px 12px;height:148px;'
-                f'box-sizing:border-box;overflow:hidden;display:flex;'
-                f'flex-direction:column;justify-content:flex-start;'
-                f'margin-bottom:8px;{"opacity:0.4;" if is_disabled else ""}">'
-                f'<div style="font-size:22px;font-weight:900;color:{label_col};'
-                f'letter-spacing:-0.5px;line-height:1">{tf["short"]}</div>'
-                f'<div style="font-size:12px;font-weight:700;color:{label_col};'
-                f'margin-top:3px">{tf["label"]}</div>'
-                f'<div style="font-size:10px;color:{desc_col};margin-top:5px;'
-                f'line-height:1.35;flex:1;overflow:hidden">{tf["desc"]}</div>'
-                f'{badge_html}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            btn_label = "✓ Selected" if is_sel else ("— No Data" if is_disabled else "Select")
-            btn_type  = "primary" if is_sel else "secondary"
-            if col.button(btn_label, key=f"tf_{tf['key']}", use_container_width=True,
-                          type=btn_type, disabled=is_disabled):
-                if not is_sel:
-                    st.session_state.timeframe_key = tf["key"]
-                    _clear_preview()
+    # Compact chip row — all 8 options in one row, small height
+    # Hover tooltip via CSS title attribute shown below the row
+    tf_cols = st.columns(len(TIMEFRAME_OPTIONS))
+    for col, tf in zip(tf_cols, TIMEFRAME_OPTIONS):
+        is_sel     = current_tf == tf["key"]
+        is_suggest = role_suggested == tf["key"]
+        is_dis     = not _tf_available(tf)
+
+        border_col = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_dis else ("#374151" if not is_dis else "#1F2937"))
+        bg_col     = "#1C2A1A" if is_sel else ("#1A2233" if is_suggest and not is_dis else ("#111827" if not is_dis else "#0D1117"))
+        label_col  = "#F59E0B" if is_sel else ("#60A5FA" if is_suggest and not is_dis else ("#D1D5DB" if not is_dis else "#3F4A5C"))
+
+        badge = ""
+        if is_sel:
+            badge = f'<div style="font-size:7px;color:#F59E0B;font-weight:700;margin-top:2px;">✓</div>'
+        elif is_suggest and not is_dis:
+            badge = f'<div style="font-size:7px;color:#60A5FA;font-weight:700;margin-top:2px;">★</div>'
+        elif is_dis:
+            badge = f'<div style="font-size:7px;color:#3F4A5C;margin-top:2px;">–</div>'
+
+        col.markdown(
+            f'<div style="background:{bg_col};border:2px solid {border_col};'
+            f'border-radius:8px;padding:6px 4px;text-align:center;'
+            f'{"opacity:0.4;" if is_dis else ""}cursor:{"not-allowed" if is_dis else "pointer"};" '
+            f'title="{tf["desc"]}">'
+            f'<div style="font-size:14px;font-weight:900;color:{label_col};line-height:1;">'
+            f'{tf["short"]}</div>'
+            f'<div style="font-size:7px;color:{label_col};opacity:0.8;margin-top:1px;">'
+            f'{tf["label"]}</div>'
+            f'{badge}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if col.button("✓" if is_sel else "•" if is_dis else tf["short"],
+                      key=f"tf_{tf['key']}", use_container_width=True,
+                      disabled=is_dis,
+                      help=tf["desc"]):
+            if not is_sel and not is_dis:
+                st.session_state.timeframe_key = tf["key"]
+                _clear_preview()
                 st.rerun()
 
-    # Guard — don't render the card until user has chosen
     if not current_tf:
-        if role_suggested:
-            sug_label = _tf_by_key(role_suggested)["label"]
-            st.info(
-                f"👆 Choose a time window above to generate your card. "
-                f"Based on your role (**{role_now}**), we suggest **{sug_label}**.",
-                icon="📅",
-            )
-        else:
-            st.info("👆 Choose a time window above to generate your preview card.", icon="📅")
+        st.info("👆 Select a time window above to generate your card.", icon="📅")
         nav_buttons(back=True, next_label="Next: Set Delivery →")
         return
 
-    # ── Quick-switch pills once a window is active ────────────────────────── #
     active_tf = _tf_by_key(current_tf)
     st.caption(
-        f"Showing: **{active_tf['label']}** · comparison: *{active_tf['comparison']}* "
-        f"· [change above ↑]"
+        f"Window: **{active_tf['label']}** · Comparison: *{active_tf['comparison']}*"
     )
 
     st.divider()
-    st.subheader("3. Your Card")
+
+    # ────────────────────────────────────────────────────────────────────────── #
+    # 4. PREVIEW CARD
+    # ────────────────────────────────────────────────────────────────────────── #
+    st.subheader("4. Your Card Preview")
 
     df       = st.session_state.get("df")
     date_col = st.session_state.get("date_col")
@@ -3726,7 +3781,7 @@ def step_preview_card():
 
     if "narrative" not in st.session_state or "metrics" not in st.session_state:
         if df is not None and date_col and kpis_cfg:
-            with st.spinner("🧠 ARIA is computing your card from real data…"):
+            with st.spinner("🧠 ARIA is building your card from real data…"):
                 try:
                     metrics = compute_preview_metrics(df, kpis_cfg, date_col, tf_key)
                     narr_dict, narr_obj            = build_stub_narrative(metrics, role_cfg)
@@ -3736,35 +3791,37 @@ def step_preview_card():
                     _u = st.session_state.get("user", {})
                     log_activity(_u.get("email",""), _u.get("name",""),
                                  "preview_card",
-                                 f"Role={st.session_state.get('role_name','?')}")
+                                 f"Role={st.session_state.get('role_name','?')} "
+                                 f"Template={st.session_state.get('card_template','?')}")
                 except Exception as e:
                     st.error(f"Preview generation failed: {e}")
         else:
-            st.info(
-                "No data loaded — showing a sample card. "
-                "Go back to Step 2 to use your own data.", icon="ℹ️",
-            )
+            st.info("No data loaded — showing a sample card. Go back to Step 2 to upload your file.", icon="ℹ️")
+            # Dynamic sample — uses first detected KPI names if available
+            _kpi_names = [k["user_name"] for k in kpis_cfg] if kpis_cfg else ["Revenue", "Profit", "Orders", "Margin"]
+            _sample_kpis = {}
+            _sample_vals = [12847, 3341, 47, 26.0]
+            _sample_fmts = ["$12,847", "$3,341", "47", "26.0%"]
+            for i, n in enumerate(_kpi_names[:4]):
+                _sample_kpis[n] = {
+                    "value": _sample_vals[i], "value_fmt": _sample_fmts[i],
+                    "mom_pct": 0.078, "yoy_pct": 0.114,
+                }
             sample_metrics = {
                 "reference_date": str(date.today() - timedelta(1)),
-                "kpis": {
-                    "Sales":   {"value":12847,"value_fmt":"$12,847","dod_pct":0.034,"wow_pct":-0.112,"mom_pct":0.078,"yoy_pct":0.114},
-                    "Profit":  {"value": 3341,"value_fmt":"$3,341", "dod_pct":0.021,"wow_pct":-0.089,"mom_pct":0.051,"yoy_pct":0.093},
-                    "Orders":  {"value":   47,"value_fmt":"47",     "dod_pct":-0.042,"wow_pct":-0.143,"mom_pct":0.062,"yoy_pct":0.087},
-                    "Margin%": {"value":0.260,"value_fmt":"26.0%",  "dod_pct":None,"wow_pct":None,"mom_pct":None,"yoy_pct":None},
-                    "AOV":     {"value":  273,"value_fmt":"$273",   "dod_pct":None,"wow_pct":None,"mom_pct":None,"yoy_pct":None},
-                },
+                "kpis": _sample_kpis,
                 "trend_series": [
                     8200,9100,7800,10200,9600,11400,8900,10800,12100,9700,
                     11200,10400,13100,11800,12400,10900,14200,13500,11700,12900,
                     10600,13800,12300,14500,11400,13200,12600,14800,13100,12847,
                 ],
                 "drivers": [
-                    {"dimension":"Category","member":"Technology",    "delta":3240,"delta_pct":0.18},
-                    {"dimension":"Category","member":"Office Supplies","delta":1420,"delta_pct":0.09},
-                    {"dimension":"Category","member":"Furniture",      "delta":-1180,"delta_pct":-0.11},
+                    {"dimension":"Region","member":"Asia Pacific","delta":3240,"delta_pct":0.18},
+                    {"dimension":"Region","member":"Europe",      "delta":1420,"delta_pct":0.09},
+                    {"dimension":"Region","member":"N America",   "delta":-1180,"delta_pct":-0.11},
                 ],
             }
-            narr_dict, narr_obj            = build_stub_narrative(sample_metrics, role_cfg)
+            narr_dict, narr_obj = build_stub_narrative(sample_metrics, role_cfg)
             st.session_state.metrics       = sample_metrics
             st.session_state.narrative     = narr_dict
             st.session_state.narrative_obj = narr_obj
@@ -3777,6 +3834,7 @@ def step_preview_card():
             st.session_state.metrics,
             role_cfg,
             st.session_state.card_style,
+            st.session_state.card_template,
         )
 
         if svg:
@@ -3789,21 +3847,21 @@ def step_preview_card():
             components.html(html_page, height=430, scrolling=False)
         else:
             st.warning(
-                "SVG generator not importable in this environment — "
-                "the card will render correctly when running the full pipeline.",
+                "Card preview unavailable in this environment — "
+                "the card renders correctly when the full pipeline runs.",
                 icon="⚠️",
             )
 
         narr = st.session_state.narrative
         m    = st.session_state.metrics
-        style_label = CARD_STYLES[st.session_state.card_style]["label"]
-        eff_accent  = (CARD_STYLES[st.session_state.card_style].get("accent_override")
-                       or role_cfg.get("accent_color", "#F59E0B"))
-        meta_col, regen_col = st.columns([4, 1])
+        style_label    = CARD_STYLES[st.session_state.card_style]["label"]
+        template_label = CARD_TEMPLATES[st.session_state.card_template]["label"]
         _atf = _tf_by_key(st.session_state.get("timeframe_key", "30d"))
+        meta_col, regen_col = st.columns([4, 1])
         meta_col.caption(
-            f"Theme: **{style_label}** · Role: **{role_cfg.get('title','—')}** · "
-            f"Window: **{_atf['label']}** · Comparison: *{_atf['comparison']}* · "
+            f"Style: **{style_label}** · Template: **{template_label}** · "
+            f"Role: **{role_cfg.get('title','—')}** · "
+            f"Window: **{_atf['label']}** · "
             f"Engine: **{narr.get('model','stub')}** · "
             f"Drivers: **{len(m.get('drivers',[]))}**"
         )
@@ -3853,9 +3911,9 @@ def _build_configs() -> tuple[str, str]:
     role_cfg      = _resolve_role()
     role_name     = st.session_state.get("role_name", "CEO")
     slack_channel = st.session_state.get("slack_channel", "")
-    style_key     = st.session_state.get("card_style", "role_accent")
-    eff_accent    = (CARD_STYLES[style_key].get("accent_override")
-                     or role_cfg.get("accent_color", "#F59E0B"))
+    style_key     = st.session_state.get("card_style", "dark")
+    template_key  = st.session_state.get("card_template", "editorial")
+    eff_accent    = role_cfg.get("accent_color", "#F59E0B")
 
     # ── Resolve data source ──────────────────────────────────────────────── #
     # Priority order:
@@ -3963,6 +4021,8 @@ def _build_configs() -> tuple[str, str]:
         "accent_color":  eff_accent,
         "driver_focus":  role_cfg.get("driver_focus", ["Category", "Region"]),
         "tone":          role_cfg["tone"],
+        "card_template": template_key,
+        "card_style":    style_key,
     }}}
 
     return (
@@ -4065,9 +4125,9 @@ def step_export_go():
     role_name = st.session_state.get("role_name", "CEO")
     role_cfg  = _resolve_role()
     kpis_cfg  = [k for k in st.session_state.get("kpis", []) if k.get("enabled")]
-    style_key = st.session_state.get("card_style", "role_accent")
-    eff_accent = (CARD_STYLES[style_key].get("accent_override")
-                  or role_cfg.get("accent_color", "#F59E0B"))
+    style_key    = st.session_state.get("card_style", "dark")
+    template_key = st.session_state.get("card_template", "editorial")
+    eff_accent   = role_cfg.get("accent_color", "#F59E0B")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # SCREEN A — LAUNCH PAD  (the only screen the user needs to fill in)
@@ -4079,12 +4139,14 @@ def step_export_go():
             f"Your card is ready. One last thing — paste your tokens below and "
             f"ARIA will handle **everything else** automatically."
         )
+        style_lbl    = CARD_STYLES.get(style_key, {}).get("label", style_key)
+        template_lbl = CARD_TEMPLATES.get(template_key, {}).get("label", template_key)
         st.markdown(
             f'<div style="background:#F59E0B18;border:1px solid #F59E0B40;border-radius:10px;'
             f'padding:14px 20px;margin-bottom:16px;font-size:13px;line-height:2">'
             f'📊 <b>{len(kpis_cfg)} KPIs</b> &nbsp;·&nbsp; '
             f'👤 <b>{role_name}</b> &nbsp;·&nbsp; '
-            f'🎨 <b>{CARD_STYLES[style_key]["label"]}</b> &nbsp;·&nbsp; '
+            f'🎨 <b>{style_lbl} · {template_lbl}</b> &nbsp;·&nbsp; '
             f'⏰ <b>{del_hour}:00 {tz}</b> &nbsp;·&nbsp; '
             f'📬 <b>{", ".join(channels) or "File"}</b>'
             f'</div>',
