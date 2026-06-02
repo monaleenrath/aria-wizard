@@ -4781,19 +4781,6 @@ def main():
           gap: 4px !important;
       }
 
-      /* ── Hide card-selector "Select" / "Active ✓" buttons — JS makes them invisible ── */
-      .aria-selector-hidden {
-          height: 4px !important;
-          min-height: 4px !important;
-          max-height: 4px !important;
-          padding: 0 !important;
-          opacity: 0 !important;
-          overflow: hidden !important;
-          margin: 0 !important;
-          border: none !important;
-          cursor: pointer !important;
-      }
-
       /* ── Time period chips — prevent text wrapping ── */
       button[data-testid="baseButton-secondary"] p,
       button[data-testid="baseButton-primary"] p {
@@ -4805,24 +4792,6 @@ def main():
           overflow: visible !important;
       }
     </style>
-    <script>
-    (function() {
-      // Invisibly collapse "Select" and "Active ✓" card-selector buttons
-      // while keeping them clickable (opacity:0 not display:none)
-      const HIDE = new Set(['Select', '✓ Selected']);
-      function applyStyles() {
-        document.querySelectorAll('button').forEach(function(btn) {
-          var txt = (btn.innerText || '').trim();
-          if (HIDE.has(txt)) {
-            btn.classList.add('aria-selector-hidden');
-          }
-        });
-      }
-      var obs = new MutationObserver(applyStyles);
-      obs.observe(document.body, { childList: true, subtree: true });
-      applyStyles();
-    })();
-    </script>
     """, unsafe_allow_html=True)
 
     # ── Auth gate ── show login screen if not logged in ──────────────────────
