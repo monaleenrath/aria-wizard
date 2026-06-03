@@ -2190,8 +2190,19 @@ def compute_preview_metrics(
     elif timeframe_key == "alltime":
         start_curr  = dmin
         window_days = max((ref - dmin).days + 1, 1)
+    elif timeframe_key == "wtd":
+        # Monday of the week containing ref
+        start_curr  = ref - timedelta(days=ref.weekday())
+        window_days = max((ref - start_curr).days + 1, 1)
+    elif timeframe_key == "mtd":
+        start_curr  = date(ref.year, ref.month, 1)
+        window_days = max((ref - start_curr).days + 1, 1)
+    elif timeframe_key == "qtd":
+        _q_start_month = ((ref.month - 1) // 3) * 3 + 1
+        start_curr  = date(ref.year, _q_start_month, 1)
+        window_days = max((ref - start_curr).days + 1, 1)
     else:
-        window_days = tf["days"]
+        window_days = tf["days"] or 30   # safe fallback
         start_curr  = ref - timedelta(window_days - 1)
 
     start_prev = start_curr - timedelta(window_days)
@@ -2241,20 +2252,21 @@ def compute_preview_metrics(
         curr   = agg_val(curr_df, k)
         prev   = agg_val(prev_df, k)
         chg    = _pct(curr, prev)
-        # Populate the field the SVG card reads based on timeframe length
-        # (mom_pct for ≤30d windows, yoy_pct for ≥180d windows, else both)
-        mom_v  = chg if window_days <= 90  else None
-        yoy_v  = chg if window_days >= 90  else None
+        # Populate the field the SVG card reads based on timeframe key
+        _is_short = timeframe_key in ("1d", "wtd", "mtd") or window_days <= 90
+        _is_long  = timeframe_key in ("ytd", "alltime", "qtd") or window_days >= 90
+        mom_v  = chg if _is_short else None
+        yoy_v  = chg if _is_long  else None
         kpis[name] = {
             "value":           curr,
             "value_fmt":       _fmt_kv(curr, k["format"]),
-            "change_pct":      chg,           # primary comparison (new field)
+            "change_pct":      chg,
             "change_label":    comparison_label,
             "timeframe_label": tf["label"],
-            "mom_pct":         mom_v,         # kept for SVG card compat
+            "mom_pct":         mom_v,
             "yoy_pct":         yoy_v,
-            "dod_pct":         chg if window_days == 1  else None,
-            "wow_pct":         chg if window_days == 7  else None,
+            "dod_pct":         chg if timeframe_key == "1d"  else None,
+            "wow_pct":         chg if timeframe_key == "wtd" else None,
         }
 
     # ── Sparkline — granularity matches timeframe ─────────────────────────── #
