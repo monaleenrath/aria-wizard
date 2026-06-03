@@ -4851,8 +4851,8 @@ def main():
         st.markdown(
             '<div style="position:fixed;bottom:12px;left:0;width:270px;'
             'text-align:center;pointer-events:none;">'
-            '<span style="font-size:9px;color:#374151;letter-spacing:1px;'
-            'font-family:monospace">© Mona Rath · ARIA v1.0</span>'
+            '<span style="font-size:11px;letter-spacing:1px;'
+            'font-family:monospace;color:#6B7280">© Mona Rath · ARIA v1.0</span>'
             '</div>',
             unsafe_allow_html=True,
         )
