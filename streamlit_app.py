@@ -831,6 +831,10 @@ def screen_auth():
     # ── Email history stored in session state only (no localStorage / JS) ── #
     _remembered_email = st.session_state.get("_auth_rem_email", "")
     _email_history: list[str] = st.session_state.get("_auth_email_history", [])
+    # Seed history from remembered email so it shows on fresh sessions
+    if _remembered_email and _remembered_email not in _email_history:
+        _email_history = [_remembered_email] + _email_history
+        st.session_state["_auth_email_history"] = _email_history[:5]
 
     _aria_title_color = "#FFFFFF" if _is_dark else "#111827"
     st.markdown(f"""
@@ -3366,10 +3370,10 @@ def step_pick_role():
 
 def step_choose_ai():
     st.header("🤖 Choose Your AI Engine")
-    st.caption("The built-in engine works instantly with no key. Gemini gives richer, more natural prose.")
+    st.caption("Gemini is highly recommended for the best narrative quality — it's free and takes 2 minutes to set up.")
 
     if "ai_provider" not in st.session_state:
-        st.session_state.ai_provider = "stub"
+        st.session_state.ai_provider = "gemini"
 
     col1, col2 = st.columns(2)
     for col, key, emoji, title, tagline, pros, con, ok_border, ok_bg in [
@@ -4841,6 +4845,17 @@ def main():
     else:
         st.session_state.step = 1
         st.rerun()
+
+    # ── Subtle attribution ───────────────────────────────────────────────────
+    with st.sidebar:
+        st.markdown(
+            '<div style="position:fixed;bottom:12px;left:0;width:270px;'
+            'text-align:center;pointer-events:none;">'
+            '<span style="font-size:9px;color:#374151;letter-spacing:1px;'
+            'font-family:monospace">© Mona Rath · ARIA v1.0</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
 
 
 if __name__ == "__main__":
