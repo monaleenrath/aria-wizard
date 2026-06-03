@@ -4095,7 +4095,7 @@ def _build_configs() -> tuple[str, str]:
     _role_map     = st.session_state.get("role_kpi_map", {})
     llm_kpi_names = [k["user_name"] for k in kpis_cfg] if kpis_cfg else []
     role_kpis     = (_role_map.get(role_name)
-                     or llm_kpi_names[:4]
+                     or llm_kpi_names[:6]
                      or role_cfg.get("kpis", ["Sales"]))
     primary_kpi   = (role_kpis[0] if role_kpis
                      else role_cfg.get("primary_kpi", "Sales"))
@@ -4785,12 +4785,14 @@ def main():
     render_account_sidebar()
 
     # ── Bootstrap API keys from Streamlit Cloud secrets ──────────────────────
+    # NOTE: slack_channel is intentionally NOT bootstrapped from secrets.
+    # It is a per-role setting that must always be entered explicitly in Step 7.
+    # Bootstrapping it would silently pre-fill an old/wrong channel.
     try:
         _sec = st.secrets
         _sec_map = {
             "gemini_key":    _sec.get("GEMINI_API_KEY"),
             "slack_token":   _sec.get("SLACK_BOT_TOKEN"),
-            "slack_channel": _sec.get("SLACK_CHANNEL_ID"),
             "teams_webhook": _sec.get("TEAMS_WEBHOOK_URL"),
         }
         for _k, _v in _sec_map.items():
