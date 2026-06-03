@@ -377,18 +377,36 @@ def _svg_close(p: list):
     p.append("</svg>")
 
 
+def _fmt_date_short(d_str: str) -> str:
+    """Format date as 'Dec 31' for compact range display."""
+    try:
+        d = date.fromisoformat(d_str)
+        return d.strftime("%b %d")
+    except Exception:
+        return d_str
+
+
 def _masthead(p: list, badge: str, ref_date: str,
-              accent: str, text: str, muted: str, border: str, w: int = 800):
+              accent: str, text: str, muted: str, border: str, w: int = 800,
+              window_start: str = "", timeframe: str = "1d"):
     p.append(f'<text x="30" y="26" fill="{accent}" font-size="9" letter-spacing="4" font-weight="700">ARIA</text>')
     p.append(
         f'<text x="{w//2}" y="26" fill="{text}" font-size="8" letter-spacing="3" '
         f'text-anchor="middle" opacity="0.7">{_e(badge)}</text>'
     )
+    # Top-right: reference date
     p.append(
-        f'<text x="{w-30}" y="26" fill="{muted}" font-size="9" letter-spacing="2" '
+        f'<text x="{w-30}" y="22" fill="{muted}" font-size="9" letter-spacing="2" '
         f'text-anchor="end">{_e(_fmt_date(ref_date))}</text>'
     )
-    p.append(f'<rect x="30" y="34" width="{w-60}" height="0.5" fill="{border}"/>')
+    # Below date: show window range for multi-day timeframes
+    if timeframe != "1d" and window_start and window_start != ref_date:
+        range_label = f'{_fmt_date_short(window_start)} → {_fmt_date_short(ref_date)}'
+        p.append(
+            f'<text x="{w-30}" y="33" fill="{muted}" font-size="7" letter-spacing="1" '
+            f'text-anchor="end" opacity="0.7">{_e(range_label)}</text>'
+        )
+    p.append(f'<rect x="30" y="40" width="{w-60}" height="0.5" fill="{border}"/>')
 
 
 def _footer(p: list, speaker_line: str,
@@ -454,7 +472,9 @@ def _tmpl_editorial(narrative, payload: dict, _cfg: dict,
 
     p: list[str] = []
     _svg_open(p, 800, 480, pal["bg"])
-    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"])
+    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"],
+              window_start=payload.get("window_start", ""),
+              timeframe=payload.get("timeframe", "1d"))
 
     p.append(f'<text x="30" y="{hl_y1}" fill="{pal["text"]}" font-size="18" '
              f'font-weight="700" font-family="Georgia, serif">'
@@ -583,7 +603,9 @@ def _tmpl_scorecard(narrative, payload: dict, _cfg: dict,
 
     p: list[str] = []
     _svg_open(p, 800, 480, pal["bg"])
-    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"])
+    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"],
+              window_start=payload.get("window_start", ""),
+              timeframe=payload.get("timeframe", "1d"))
 
     hl_y = 56
     p.append(f'<text x="30" y="{hl_y}" fill="{pal["text"]}" font-size="16" '
@@ -692,7 +714,9 @@ def _tmpl_story_arc(narrative, payload: dict, _cfg: dict,
 
     p: list[str] = []
     _svg_open(p, 800, 480, pal["bg"])
-    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"])
+    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"],
+              window_start=payload.get("window_start", ""),
+              timeframe=payload.get("timeframe", "1d"))
 
     bar_h = 14 + len(hl_lines) * 26
     p.append(f'<rect x="30" y="42" width="5" height="{bar_h}" fill="{accent}"/>')
@@ -784,7 +808,9 @@ def _tmpl_ops_dashboard(narrative, payload: dict, _cfg: dict,
 
     p: list[str] = []
     _svg_open(p, 800, 480, pal["bg"])
-    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"])
+    _masthead(p, badge, ref_date, accent, pal["text"], pal["muted"], pal["border"],
+              window_start=payload.get("window_start", ""),
+              timeframe=payload.get("timeframe", "1d"))
 
     p.append(f'<text x="30" y="58" fill="{pal["text"]}" font-size="15" '
              f'font-weight="700" font-family="Georgia, serif">'
@@ -909,8 +935,14 @@ def _tmpl_board_pack(narrative, payload: dict, _cfg: dict,
              f'letter-spacing="5">ARIA</text>')
     p.append(f'<text x="28" y="34" fill="#FFFFFF" font-size="8" letter-spacing="3" '
              f'opacity="0.75">{_e(badge)}</text>')
-    p.append(f'<text x="772" y="28" fill="#FFFFFF" font-size="9" letter-spacing="2" '
+    p.append(f'<text x="772" y="22" fill="#FFFFFF" font-size="9" letter-spacing="2" '
              f'text-anchor="end" opacity="0.8">{_e(_fmt_date(ref_date))}</text>')
+    _ws = payload.get("window_start", "")
+    _tf = payload.get("timeframe", "1d")
+    if _tf != "1d" and _ws and _ws != ref_date:
+        _rl = f'{_fmt_date_short(_ws)} → {_fmt_date_short(ref_date)}'
+        p.append(f'<text x="772" y="34" fill="#FFFFFF" font-size="7" letter-spacing="1" '
+                 f'text-anchor="end" opacity="0.65">{_e(_rl)}</text>')
 
     hl_y = 68
     for i, line in enumerate(hl_lines):
