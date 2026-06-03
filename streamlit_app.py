@@ -828,13 +828,63 @@ def render_help_sidebar():
 
 def screen_auth():
     """Full-page login / register screen shown when no user is in session."""
-    # ── Email history stored in session state only (no localStorage / JS) ── #
-    _remembered_email = st.session_state.get("_auth_rem_email", "")
-    _email_history: list[str] = st.session_state.get("_auth_email_history", [])
-    # Seed history from remembered email so it shows on fresh sessions
+    # ── Email history via localStorage (persists across sessions in same browser) ── #
+    # JS writes aria_email_history (JSON array) to localStorage on every login.
+    # On page load, JS reads it and stuffs it into a hidden Streamlit text input
+    # so Python can read it via session state.
+    st.markdown("""
+    <script>
+    (function() {
+        const KEY = 'aria_email_history';
+        // Read existing history and push into hidden input
+        function pushToStreamlit() {
+            const raw = localStorage.getItem(KEY) || '[]';
+            const input = window.parent.document.querySelector(
+                'input[data-testid="stTextInput-aria_email_bridge"]'
+            );
+            if (input && input.value !== raw) {
+                input.value = raw;
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+            }
+        }
+        // Expose save function for use after login
+        window._ariaEmailHistorySave = function(email) {
+            const raw = localStorage.getItem(KEY) || '[]';
+            let hist = [];
+            try { hist = JSON.parse(raw); } catch(e) {}
+            hist = hist.filter(e => e !== email);
+            hist.unshift(email);
+            if (hist.length > 5) hist = hist.slice(0, 5);
+            localStorage.setItem(KEY, JSON.stringify(hist));
+        };
+        // Push on load + after short delay (Streamlit re-renders asynchronously)
+        pushToStreamlit();
+        setTimeout(pushToStreamlit, 800);
+    })();
+    </script>
+    """, unsafe_allow_html=True)
+
+    # Hidden bridge input — JS writes localStorage value here; Python reads it
+    _ls_raw = st.text_input("__bridge__", key="aria_email_bridge",
+                             label_visibility="collapsed", value="")
+    _email_history: list[str] = []
+    if _ls_raw:
+        try:
+            import json as _json
+            _email_history = _json.loads(_ls_raw)
+            if not isinstance(_email_history, list):
+                _email_history = []
+        except Exception:
+            _email_history = []
+
+    # "Remember me" still works as before (query param for cross-device)
+    _qp_email = st.query_params.get("rem", "")
+    if _qp_email and not st.session_state.get("_auth_rem_email"):
+        st.session_state["_auth_rem_email"] = _qp_email
+    _remembered_email = st.session_state.get("_auth_rem_email", "") or _qp_email
+    # Merge remembered email into history if not already present
     if _remembered_email and _remembered_email not in _email_history:
         _email_history = [_remembered_email] + _email_history
-        st.session_state["_auth_email_history"] = _email_history[:5]
 
     _aria_title_color = "#FFFFFF" if _is_dark else "#111827"
     st.markdown(f"""
@@ -914,16 +964,19 @@ def screen_auth():
                     if user:
                         st.session_state.user = user
                         log_activity(user["email"], user["name"], "login", "Signed in")
-                        # Update in-session email history (session-scoped only)
-                        _hist = st.session_state.get("_auth_email_history", [])
                         _e = email_in.strip()
-                        _hist = [x for x in _hist if x != _e]
-                        _hist.insert(0, _e)
-                        st.session_state["_auth_email_history"] = _hist[:5]
+                        # Save email to browser localStorage (persists across sessions)
+                        st.markdown(
+                            f"<script>window._ariaEmailHistorySave && "
+                            f"window._ariaEmailHistorySave('{_e}');</script>",
+                            unsafe_allow_html=True,
+                        )
                         if remember_me:
                             st.session_state["_auth_rem_email"] = _e
+                            st.query_params["rem"] = _e
                         else:
                             st.session_state.pop("_auth_rem_email", None)
+                            st.query_params.pop("rem", None)
                         st.rerun()
                     else:
                         st.error("Incorrect email or password.")
