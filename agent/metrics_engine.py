@@ -61,10 +61,14 @@ class MetricsSnapshot:
     kpis: Dict[str, KPI]
     anomalies: List[Anomaly] = field(default_factory=list)
     trend_summary: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    window_start: str = ""
+    timeframe: str = "1d"
 
     def to_dict(self) -> dict:
         return {
             "reference_date": self.reference_date,
+            "window_start":   self.window_start,
+            "timeframe":      self.timeframe,
             "kpis": {k: asdict(v) for k, v in self.kpis.items()},
             "anomalies": [asdict(a) for a in self.anomalies],
             "trend_summary": self.trend_summary,
@@ -136,16 +140,32 @@ def _aggregate(df: pd.DataFrame, kpi_cfg: dict) -> float:
 # Main entry
 # --------------------------------------------------------------------------- #
 
+def _compute_start_date(reference_date: date, timeframe: str) -> date:
+    """Return the window start date for a given timeframe key."""
+    if timeframe == "wtd":
+        return reference_date - timedelta(days=reference_date.weekday())
+    if timeframe == "mtd":
+        return reference_date.replace(day=1)
+    if timeframe == "qtd":
+        q_start_month = ((reference_date.month - 1) // 3) * 3 + 1
+        return date(reference_date.year, q_start_month, 1)
+    if timeframe == "ytd":
+        return date(reference_date.year, 1, 1)
+    # 1d and anything else — single day window
+    return reference_date
+
+
 def compute_metrics(
     df: pd.DataFrame,
     config: dict,
     reference_date: Optional[date] = None,
 ) -> MetricsSnapshot:
-    """Compute KPIs, deltas, and anomalies for the reference date."""
+    """Compute KPIs, deltas, and anomalies for the configured timeframe."""
     date_col = config["data"]["date_column"]
     kpi_cfgs = config["metrics"]["kpis"]
     anomaly_threshold = config["metrics"].get("anomaly_zscore_threshold", 2.0)
     lookback = config["metrics"].get("anomaly_lookback_days", 90)
+    timeframe = config["metrics"].get("timeframe", "1d")
 
     df = df.copy()
     df["_date"] = pd.to_datetime(df[date_col]).dt.date
@@ -178,41 +198,57 @@ def compute_metrics(
                 "fallback_to_max_date_if_missing=true in config.yaml."
             )
 
-    log.info("Reporting on reference_date=%s", reference_date)
+    # Compute window start date based on timeframe
+    start_date = _compute_start_date(reference_date, timeframe)
+    window_days = max((reference_date - start_date).days + 1, 1)
+    log.info("Timeframe=%s | Window: %s → %s (%d days)",
+             timeframe, start_date, reference_date, window_days)
 
-    # Comparison anchors
-    prev_day = reference_date - timedelta(days=1)
-    prev_week = reference_date - timedelta(days=7)
-    prev_month = reference_date - pd.DateOffset(months=1)
-    prev_month = prev_month.date() if hasattr(prev_month, "date") else prev_month
-    prev_year = reference_date - pd.DateOffset(years=1)
-    prev_year = prev_year.date() if hasattr(prev_year, "date") else prev_year
+    df["_date"] = pd.to_datetime(df[date_col]).dt.date
 
-    def slice_day(d):
-        return df[df["_date"] == d]
+    def slice_window(s: date, e: date):
+        return df[(df["_date"] >= s) & (df["_date"] <= e)]
 
-    today_df = slice_day(reference_date)
+    # Current window
+    curr_df = slice_window(start_date, reference_date)
+
+    # Comparison windows — same-length period shifted back
+    prev_start = start_date - timedelta(days=window_days)
+    prev_end   = reference_date - timedelta(days=window_days)
+    prev_df    = slice_window(prev_start, prev_end)
+
+    # YoY — same window one year prior
+    yoy_start = date(start_date.year - 1, start_date.month, start_date.day)
+    yoy_end   = date(reference_date.year - 1, reference_date.month, reference_date.day)
+    yoy_df    = slice_window(yoy_start, yoy_end)
 
     kpis: Dict[str, KPI] = {}
     for kpi_cfg in kpi_cfgs:
         name = kpi_cfg["name"]
         fmt = kpi_cfg.get("format", "currency")
 
-        curr = _aggregate(today_df, kpi_cfg)
-        dod = _pct_change(curr, _aggregate(slice_day(prev_day), kpi_cfg))
-        wow = _pct_change(curr, _aggregate(slice_day(prev_week), kpi_cfg))
-        mom = _pct_change(curr, _aggregate(slice_day(prev_month), kpi_cfg))
-        yoy = _pct_change(curr, _aggregate(slice_day(prev_year), kpi_cfg))
+        curr = _aggregate(curr_df, kpi_cfg)
+        prev = _aggregate(prev_df, kpi_cfg)
+        yoy  = _aggregate(yoy_df,  kpi_cfg)
+
+        chg     = _pct_change(curr, prev)
+        yoy_chg = _pct_change(curr, yoy)
+
+        # Map the primary comparison to the right field based on timeframe
+        dod_pct = chg if timeframe == "1d"  else None
+        wow_pct = chg if timeframe == "wtd" else None
+        mom_pct = chg if timeframe in ("mtd", "1d") else None
+        yoy_pct = yoy_chg
 
         kpis[name] = KPI(
             name=name,
             value=curr,
             value_fmt=_fmt(curr, fmt),
-            dod_pct=dod,
-            wow_pct=wow,
-            mom_pct=mom,
-            yoy_pct=yoy,
-            direction=_direction(dod),
+            dod_pct=dod_pct,
+            wow_pct=wow_pct,
+            mom_pct=mom_pct if mom_pct is not None else chg,
+            yoy_pct=yoy_pct,
+            direction=_direction(chg),
             format=fmt,
         )
 
@@ -303,6 +339,8 @@ def compute_metrics(
 
     return MetricsSnapshot(
         reference_date=str(reference_date),
+        window_start=str(start_date),
+        timeframe=timeframe,
         kpis=kpis,
         anomalies=anomalies,
         trend_summary=trend,
