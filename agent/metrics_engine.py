@@ -151,6 +151,9 @@ def _compute_start_date(reference_date: date, timeframe: str) -> date:
         return date(reference_date.year, q_start_month, 1)
     if timeframe == "ytd":
         return date(reference_date.year, 1, 1)
+    if timeframe == "alltime":
+        # Far-past anchor so the entire dataset is included
+        return date(2000, 1, 1)
     # 1d and anything else — single day window
     return reference_date
 
