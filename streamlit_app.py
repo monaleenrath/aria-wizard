@@ -4062,6 +4062,7 @@ def _build_configs() -> tuple[str, str]:
             "fallback_to_max_date_if_missing": True,
         },
         "metrics": {
+            "timeframe": st.session_state.get("timeframe_key", "1d"),
             "kpis": [
                 {"name": k["user_name"], "column": k.get("column", k["user_name"]),
                  "agg": k["agg"], "format": k["format"]}
