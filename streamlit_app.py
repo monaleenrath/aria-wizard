@@ -4849,14 +4849,10 @@ def main():
     # ── Subtle attribution ───────────────────────────────────────────────────
     with st.sidebar:
         st.markdown(
-            '<style>'
-            '@media (prefers-color-scheme: dark) { .aria-attr { color: #FFFFFF !important; } }'
-            '@media (prefers-color-scheme: light) { .aria-attr { color: #374151 !important; } }'
-            '</style>'
             '<div style="position:fixed;bottom:12px;left:0;width:270px;'
             'text-align:center;pointer-events:none;">'
-            '<span class="aria-attr" style="font-size:12px;letter-spacing:1px;'
-            'font-family:monospace">© Mona Rath · ARIA v1.0</span>'
+            '<span style="font-size:12px;letter-spacing:1px;'
+            'font-family:monospace;color:#9CA3AF">© Mona Rath · ARIA v1.0</span>'
             '</div>',
             unsafe_allow_html=True,
         )
