@@ -625,6 +625,9 @@ def _tmpl_scorecard(narrative, payload: dict, _cfg: dict,
     donut_x, donut_y, donut_w, donut_h = 498, 108, 272, 170
     lifts = sorted([d for d in all_drivers if d.get("delta", 0) > 0],
                    key=lambda d: d["delta"], reverse=True)[:5]
+    # Fallback: if no positive drivers, use all drivers sorted by absolute value
+    if not lifts and all_drivers:
+        lifts = sorted(all_drivers, key=lambda d: abs(d.get("delta", 0)), reverse=True)[:5]
     if lifts:
         d_labels = [f"{d.get('dimension','?')}: {d.get('member','?')}"[:20] for d in lifts]
         d_values = [abs(d["delta"]) for d in lifts]
