@@ -3464,10 +3464,13 @@ def step_set_delivery():
             help_tip("slack_bot_token")
 
         ch1, ch2 = st.columns([11, 1])
-        st.session_state.slack_channel_input = ch1.text_input(
-            "Channel ID", placeholder="C0B5U431C3U",
-            key="slack_channel",
+        _ch_entered = ch1.text_input(
+            "Channel ID", placeholder="e.g. C012AB3CD45",
+            key="_slack_channel_widget",
+            value=st.session_state.get("slack_channel", ""),
         )
+        if _ch_entered:
+            st.session_state["slack_channel"] = _ch_entered
         with ch2:
             st.markdown("<br>", unsafe_allow_html=True)
             help_tip("slack_channel_id")
@@ -4150,7 +4153,7 @@ def _render_key_inputs(provider: str, channels: list):
         c1, c2 = st.columns([5, 1])
         slack_ch = c1.text_input(
             "Slack Channel ID",
-            placeholder="C0B5U431C3U",
+            placeholder="e.g. C012AB3CD45",
             key="slack_ch_launch",
             value=st.session_state.get("slack_channel", ""),
         )
@@ -4160,7 +4163,7 @@ def _render_key_inputs(provider: str, channels: list):
         if slack_tok:
             st.session_state.slack_token   = slack_tok
         if slack_ch:
-            st.session_state.slack_channel = slack_ch
+            st.session_state["slack_channel"] = slack_ch
 
     if "teams" in channels:
         t1, t2 = st.columns([5, 1])
