@@ -832,7 +832,7 @@ def screen_auth():
     _remembered_email = st.session_state.get("_auth_rem_email", "")
     _email_history: list[str] = st.session_state.get("_auth_email_history", [])
 
-    _aria_title_color = "#F59E0B" if _is_dark else "#111827"
+    _aria_title_color = "#FFFFFF" if _is_dark else "#111827"
     st.markdown(f"""
     <style>
       /* Hide Streamlit's default top toolbar lines */
@@ -3978,23 +3978,10 @@ def step_preview_card():
 
 def _merge_roles_yaml(owner: str, repo: str, pat: str, new_roles_yaml: str) -> str:
     """
-    Fetch the current roles.yaml from the GitHub repo and merge the new role in.
-    Preserves every existing role; adds/updates only the newly configured role.
-    Falls back to new_roles_yaml alone if the repo file can't be fetched or parsed.
+    Returns the new roles.yaml as-is, replacing whatever was in the repo.
+    Each wizard run configures exactly one role — old accumulated roles are cleared
+    so the agent never posts to stale channels from previous runs.
     """
-    import base64 as _b64
-    r = _gh_api("get", f"/repos/{owner}/{repo}/contents/roles.yaml", pat)
-    if r.status_code == 200:
-        try:
-            existing_content = _b64.b64decode(r.json()["content"]).decode("utf-8")
-            existing  = yaml.safe_load(existing_content) or {}
-            new_data  = yaml.safe_load(new_roles_yaml)   or {}
-            merged_roles = existing.get("roles", {})
-            merged_roles.update(new_data.get("roles", {}))   # add/overwrite just this role
-            merged = {"roles": merged_roles}
-            return yaml.dump(merged, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        except Exception:
-            pass  # parsing failed — fall through to return new_roles_yaml only
     return new_roles_yaml
 
 
