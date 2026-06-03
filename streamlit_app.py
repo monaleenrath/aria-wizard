@@ -187,29 +187,23 @@ CARD_TEMPLATES = {
 # sparkline_gran: "daily" | "weekly" | "monthly"  — how to bucket the trend line.
 # comparison: label shown on the card delta chips.
 TIMEFRAME_OPTIONS: list[dict] = [
-    {"key": "1d",     "label": "Yesterday",       "short": "1D",  "days": 1,
-     "comparison": "vs prior day",        "sparkline_gran": "daily",   "sparkpoints": 7,
+    {"key": "1d",  "label": "Yesterday",        "short": "1D",  "days": 1,
+     "comparison": "vs prior day",       "sparkline_gran": "daily",   "sparkpoints": 7,
      "desc": "Daily ops pulse. Ideal for executives who need last night's numbers first thing."},
-    {"key": "7d",     "label": "Last 7 Days",     "short": "7D",  "days": 7,
-     "comparison": "vs prior 7 days",     "sparkline_gran": "daily",   "sparkpoints": 7,
-     "desc": "Weekly rhythm. Great for sales teams tracking weekly targets and field momentum."},
-    {"key": "30d",    "label": "Last 30 Days",    "short": "30D", "days": 30,
-     "comparison": "vs prior 30 days",    "sparkline_gran": "daily",   "sparkpoints": 30,
-     "desc": "Monthly snapshot. The standard window for P&L reviews and leadership reporting."},
-    {"key": "90d",    "label": "Last Quarter",    "short": "90D", "days": 90,
-     "comparison": "vs prior quarter",    "sparkline_gran": "weekly",  "sparkpoints": 13,
-     "desc": "Quarterly view. Surfaces seasonal patterns and QoQ performance shifts."},
-    {"key": "180d",   "label": "Last 6 Months",   "short": "6M",  "days": 180,
-     "comparison": "vs prior 6 months",   "sparkline_gran": "weekly",  "sparkpoints": 26,
-     "desc": "Half-year lens. Useful for mid-year reviews and trend validation."},
-    {"key": "365d",   "label": "Last 12 Months",  "short": "1Y",  "days": 365,
-     "comparison": "vs prior year",       "sparkline_gran": "monthly", "sparkpoints": 12,
-     "desc": "Full-year view. Essential for YoY analysis, forecasting, and deep-dive BI work."},
-    {"key": "ytd",    "label": "Year to Date",    "short": "YTD", "days": None,
-     "comparison": "vs same period LY",   "sparkline_gran": "monthly", "sparkpoints": 12,
+    {"key": "wtd", "label": "Week to Date",     "short": "WTD", "days": None,
+     "comparison": "vs prior week",      "sparkline_gran": "daily",   "sparkpoints": 7,
+     "desc": "Current week performance from Monday to today. Great for weekly targets and field momentum."},
+    {"key": "mtd", "label": "Month to Date",    "short": "MTD", "days": None,
+     "comparison": "vs prior month",     "sparkline_gran": "daily",   "sparkpoints": 30,
+     "desc": "Month-to-date snapshot. The standard window for P&L reviews and leadership reporting."},
+    {"key": "qtd", "label": "Quarter to Date",  "short": "QTD", "days": None,
+     "comparison": "vs prior quarter",   "sparkline_gran": "weekly",  "sparkpoints": 13,
+     "desc": "Current quarter from Q-start to today. Surfaces QoQ performance shifts."},
+    {"key": "ytd", "label": "Year to Date",     "short": "YTD", "days": None,
+     "comparison": "vs same period LY",  "sparkline_gran": "monthly", "sparkpoints": 12,
      "desc": "Current year progress against the same period last year."},
-    {"key": "alltime","label": "All Time",        "short": "All", "days": None,
-     "comparison": "vs prior period",     "sparkline_gran": "monthly", "sparkpoints": 24,
+    {"key": "alltime", "label": "All Time",     "short": "All", "days": None,
+     "comparison": "vs prior period",    "sparkline_gran": "monthly", "sparkpoints": 24,
      "desc": "Full historical dataset. Best for baseline benchmarking and long-range trends."},
 ]
 
@@ -221,14 +215,14 @@ ROLE_TIMEFRAME_DEFAULTS: dict[str, str] = {
     "CFO":                "1d",
     "COO":                "1d",
     "CTO":                "1d",
-    "VP":                 "30d",
-    "Director":           "30d",
-    "Sales Head":         "7d",
-    "Senior Manager":     "7d",
-    "Manager":            "7d",
-    "Team Lead":          "365d",
-    "Business Analyst":   "365d",
-    "Operations Head":    "7d",
+    "VP":                 "mtd",
+    "Director":           "mtd",
+    "Sales Head":         "wtd",
+    "Senior Manager":     "wtd",
+    "Manager":            "wtd",
+    "Team Lead":          "ytd",
+    "Business Analyst":   "ytd",
+    "Operations Head":    "wtd",
 }
 
 def _tf_by_key(key: str) -> dict:
@@ -838,17 +832,18 @@ def screen_auth():
     _remembered_email = st.session_state.get("_auth_rem_email", "")
     _email_history: list[str] = st.session_state.get("_auth_email_history", [])
 
-    st.markdown("""
+    _aria_title_color = "#F59E0B" if _is_dark else "#111827"
+    st.markdown(f"""
     <style>
       /* Hide Streamlit's default top toolbar lines */
-      header[data-testid="stHeader"] { display: none !important; }
-      #MainMenu { display: none !important; }
-      footer { display: none !important; }
-      .block-container { padding-top: 2rem !important; }
+      header[data-testid="stHeader"] {{ display: none !important; }}
+      #MainMenu {{ display: none !important; }}
+      footer {{ display: none !important; }}
+      .block-container {{ padding-top: 2rem !important; }}
     </style>
     <div style="text-align:center;padding:24px 0 12px">
       <div style="font-size:56px;margin-bottom:8px">⚡</div>
-      <h1 style="font-size:52px;font-weight:900;letter-spacing:6px;margin:0;color:#F59E0B">ARIA</h1>
+      <h1 style="font-size:52px;font-weight:900;letter-spacing:6px;margin:0;color:{_aria_title_color}">ARIA</h1>
       <p style="font-size:14px;color:#6B7280;margin:8px 0 0;letter-spacing:1px">
         Autonomous Report &amp; Insight AI Agent
       </p>
@@ -2934,6 +2929,10 @@ def step_welcome():
         """, unsafe_allow_html=True)
 
     # ── Feature highlights ────────────────────────────────────────────────── #
+    _feat_bg     = "#111827" if _is_dark else "#F3F4F6"
+    _feat_border = "#374151" if _is_dark else "#D1D5DB"
+    _feat_title  = "#F9FAFB" if _is_dark else "#111827"
+    _feat_body   = "#9CA3AF" if _is_dark else "#4B5563"
     f1, f2, f3 = st.columns(3)
     for col, icon, title, body in [
         (f1, "📊", "Any Data",
@@ -2944,11 +2943,11 @@ def step_welcome():
          "Set up once. ARIA posts to Slack, Teams, or email every morning — no manual work."),
     ]:
         col.markdown(
-            f'<div style="background:#111827;border:1px solid #374151;border-radius:12px;'
+            f'<div style="background:{_feat_bg};border:1px solid {_feat_border};border-radius:12px;'
             f'padding:20px;height:100%">'
             f'<div style="font-size:28px;margin-bottom:8px">{icon}</div>'
-            f'<div style="font-weight:700;margin-bottom:6px">{title}</div>'
-            f'<div style="font-size:12px;color:#9CA3AF;line-height:1.6">{body}</div>'
+            f'<div style="font-weight:700;margin-bottom:6px;color:{_feat_title}">{title}</div>'
+            f'<div style="font-size:12px;color:{_feat_body};line-height:1.6">{body}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -3568,23 +3567,19 @@ def step_preview_card():
 
     style_cols = st.columns(4, gap="small")
     for col, (sk, sd) in zip(style_cols, CARD_STYLES.items()):
-        is_sel  = st.session_state.card_style == sk
-        swatch  = sd["swatch"]
-        border  = "#F59E0B" if is_sel else "#374151"
+        is_sel    = st.session_state.card_style == sk
+        swatch    = sd["swatch"]
         _light_bg = sk in ("beige", "grey")
-        txt_col = "#F59E0B" if is_sel else ("#111111" if _light_bg else "#E5E7EB")
-        sub_col = "#555" if _light_bg else "#9CA3AF"
-        # Tick badge for selected
-        tick = '<div style="font-size:11px;color:#F59E0B;font-weight:900;margin-top:4px;">✓ Selected</div>' if is_sel else ""
+        txt_col   = "#111111" if _light_bg else "#E5E7EB"
+        sub_col   = "#555"    if _light_bg else "#9CA3AF"
         col.markdown(
-            f'<div style="border:2.5px solid {border};border-radius:10px;'
-            f'padding:12px 8px;text-align:center;height:110px;box-sizing:border-box;'
+            f'<div style="border:2px solid #374151;border-radius:10px;'
+            f'padding:10px 8px;text-align:center;height:90px;box-sizing:border-box;'
             f'background:{swatch};cursor:pointer;margin-bottom:6px;">'
             f'<div style="font-size:13px;font-weight:800;color:{txt_col};'
             f'line-height:1.2;margin-top:4px;">{sd["label"]}</div>'
             f'<div style="font-size:9px;color:{sub_col};margin-top:5px;line-height:1.4;">'
             f'{sd["tagline"]}</div>'
-            f'{tick}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -3621,11 +3616,14 @@ def step_preview_card():
             _min_data_dt = _max_data_dt = None
 
     def _tf_available(tf: dict) -> bool:
+        # Period-to-date and open-ended keys are always available
+        if tf["key"] in ("alltime", "ytd", "wtd", "mtd", "qtd"):
+            return True
         if _max_data_dt is None:
             return True
-        if tf["key"] in ("alltime", "ytd"):
-            return True
         days_needed = tf.get("days", 1)
+        if days_needed is None:
+            return True
         if _min_data_dt is None:
             return True
         return (_max_data_dt - _min_data_dt).days >= days_needed
@@ -3643,7 +3641,7 @@ def step_preview_card():
 
     # Single chip row — one button per timeframe, NO duplicate markdown row above
     _use_custom = st.session_state.get("timeframe_key") == "custom"
-    tf_cols = st.columns([1] * len(TIMEFRAME_OPTIONS) + [1.5])  # Custom gets extra width
+    tf_cols = st.columns([1] * len(TIMEFRAME_OPTIONS) + [1.2])  # Custom gets slight extra width
     for col, tf in zip(tf_cols, TIMEFRAME_OPTIONS):
         is_sel = current_tf == tf["key"] and not _use_custom
         is_dis = not _tf_available(tf)
@@ -3695,15 +3693,26 @@ def step_preview_card():
     elif current_tf and current_tf != "custom":
         # Show the actual date range for the selected chip
         active_tf = _tf_by_key(current_tf)
-        if active_tf and _max_data_dt:
+        _ref = _max_data_dt if _max_data_dt else _today
+        if active_tf:
             if current_tf == "alltime" and _min_data_dt:
-                _range_start = _min_data_dt
-                _range_end   = _max_data_dt
+                _range_start, _range_end = _min_data_dt, _ref
             elif current_tf == "ytd":
-                _range_start = date(_max_data_dt.year, 1, 1)
-                _range_end   = _max_data_dt
+                _range_start = date(_ref.year, 1, 1)
+                _range_end   = _ref
+            elif current_tf == "wtd":
+                # Monday of the current week
+                _range_start = _ref - timedelta(days=_ref.weekday())
+                _range_end   = _ref
+            elif current_tf == "mtd":
+                _range_start = date(_ref.year, _ref.month, 1)
+                _range_end   = _ref
+            elif current_tf == "qtd":
+                _q_start_month = ((_ref.month - 1) // 3) * 3 + 1
+                _range_start = date(_ref.year, _q_start_month, 1)
+                _range_end   = _ref
             elif active_tf.get("days"):
-                _range_end   = _max_data_dt
+                _range_end   = _ref
                 _range_start = _range_end - timedelta(days=active_tf["days"])
             else:
                 _range_start = _range_end = None
@@ -3712,7 +3721,7 @@ def step_preview_card():
                     f"📅 **{_range_start.strftime('%b %d, %Y')}** → "
                     f"**{_range_end.strftime('%b %d, %Y')}** · {active_tf['comparison']}"
                 )
-        elif not _max_data_dt:
+        if not _max_data_dt:
             st.caption("📅 Upload data to see actual date range.")
     else:
         st.info("👆 Select a time window above to generate your card.", icon="📅")
@@ -3825,15 +3834,12 @@ def step_preview_card():
     tmpl_cols = st.columns(5, gap="small")
     for col, (tk, td) in zip(tmpl_cols, CARD_TEMPLATES.items()):
         is_sel  = st.session_state.card_template == tk
-        border  = "#F59E0B" if is_sel else "#374151"
-        lbl_col = "#F59E0B" if is_sel else "#E5E7EB"
-        tick    = "✓ " if is_sel else ""
         col.markdown(
-            f'<div style="border:2.5px solid {border};border-radius:10px;'
+            f'<div style="border:2px solid #374151;border-radius:10px;'
             f'padding:8px 6px;text-align:center;background:#0F172A;margin-bottom:6px;">'
             f'{_TMPL_WIREFRAMES[tk]}'
-            f'<div style="font-size:10px;font-weight:800;color:{lbl_col};'
-            f'margin-top:6px;line-height:1.2;">{tick}{td["label"]}</div>'
+            f'<div style="font-size:10px;font-weight:800;color:#E5E7EB;'
+            f'margin-top:6px;line-height:1.2;">{td["label"]}</div>'
             f'<div style="font-size:8px;color:#6B7280;margin-top:3px;line-height:1.3;">'
             f'{td["tagline"]}</div>'
             f'</div>',
@@ -3942,8 +3948,8 @@ def step_preview_card():
             f"Engine: **{narr.get('model','stub')}** · "
             f"Drivers: **{len(m.get('drivers',[]))}**"
         )
-        _r1, _r2 = st.columns([3, 1])
-        if _r2.button("🔄 Refresh", use_container_width=True):
+        _r1, _r2, _r3 = st.columns([3, 1, 2])
+        if _r2.button("🔄 Refresh", use_container_width=False):
             _clear_preview()
             st.rerun()
 
@@ -4576,20 +4582,25 @@ def step_export_go():
 
         repo_url = f"https://github.com/{owner}/{repo}"
 
-        # Determine if the scheduled hour is still upcoming today
-        try:
-            import pytz as _pytz, datetime as _dtt
-            _now_local = _dtt.datetime.now(_pytz.timezone(tz))
-            _delivery_day = "Today" if _now_local.hour < del_hour else "Tomorrow"
-        except Exception:
-            _delivery_day = "Tomorrow"
+        # Determine schedule label
+        _is_onetime = st.session_state.get("schedule_type", "daily") == "onetime"
+        if _is_onetime:
+            _delivery_label = "One-time report · trigger manually from GitHub Actions"
+        else:
+            try:
+                import pytz as _pytz, datetime as _dtt
+                _now_local = _dtt.datetime.now(_pytz.timezone(tz))
+                _delivery_day = "Today" if _now_local.hour < del_hour else "Tomorrow"
+            except Exception:
+                _delivery_day = "Tomorrow"
+            _delivery_label = f"{_delivery_day} at **{del_hour}:00 {tz}**"
 
         st.markdown(f"""
 | | |
 |---|---|
 | 📦 Repository | [{owner}/{repo}]({repo_url}) |
 | 👤 Role | {role_name} — {role_cfg['title']} |
-| ⏰ First delivery | {_delivery_day} at **{del_hour}:00 {tz}** |
+| ⏰ Schedule | {_delivery_label} |
 | 📬 Delivery | {', '.join(channels) or 'File only'} |
         """)
 
