@@ -2816,14 +2816,18 @@ def screen_admin():
 
 def render_progress():
     step  = st.session_state.get("step", 1)
+    # Active step: white text on green circle in dark mode, dark text on green circle in light mode
+    _active_tc      = "#ffffff" if _is_dark else "#111827"
+    _inactive_tc    = "#6B7280"
+    _inactive_lc    = "#D1D5DB" if not _is_dark else "#374151"
     items = ""
     for i, label in enumerate(STEP_LABELS, 1):
         if i < step:
             c, bg, tc, sym = "#10B981", "#10B98120", "#10B981", "✓"
         elif i == step:
-            c, bg, tc, sym = "#10B981", "#10B981", "#ffffff", str(i)   # green filled = active
+            c, bg, tc, sym = "#10B981", "#10B981", _active_tc, str(i)
         else:
-            c, bg, tc, sym = "#374151", "transparent", "#6B7280", str(i)
+            c, bg, tc, sym = (_inactive_lc, "transparent", _inactive_tc, str(i))
         items += (
             f'<div style="display:flex;flex-direction:column;align-items:center;min-width:64px">'
             f'<div style="width:36px;height:36px;border-radius:50%;background:{bg};border:2.5px solid {c};'
@@ -2833,7 +2837,7 @@ def render_progress():
             f'</div>'
         )
         if i < TOTAL_STEPS:
-            lc = "#10B981" if i < step else "#374151"
+            lc = "#10B981" if i < step else _inactive_lc
             items += f'<div style="flex:1;height:2px;background:{lc};margin:18px 2px 0"></div>'
     st.markdown(
         f'<div style="display:flex;align-items:flex-start;padding:16px 0 24px;overflow-x:auto">{items}</div>',
@@ -3948,8 +3952,8 @@ def step_preview_card():
             f"Engine: **{narr.get('model','stub')}** · "
             f"Drivers: **{len(m.get('drivers',[]))}**"
         )
-        _r1, _r2, _r3 = st.columns([3, 1, 2])
-        if _r2.button("🔄 Refresh", use_container_width=False):
+        _r1, _r2 = st.columns([1, 5])
+        if _r1.button("🔄 Refresh", use_container_width=True):
             _clear_preview()
             st.rerun()
 
