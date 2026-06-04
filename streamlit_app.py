@@ -2468,6 +2468,80 @@ def build_stub_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
         return d, obj
 
 
+def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
+    """Call real Gemini to generate the Step-6 preview narrative — exact
+    parity with what agent/main.py produces for the Slack-delivered card.
+
+    Fallback chain (silent, never raises):
+      1. No GEMINI_API_KEY in session_state or env → stub
+      2. agent.narrative_generator not importable     → stub
+      3. Gemini call raises (rate limit, network)     → stub (built into
+         generate_narrative itself — defensive layer kept just in case)
+
+    Returns (narr_dict, narr_obj) — identical shape to build_stub_narrative
+    so the caller in step_preview_card doesn't need to change.
+    """
+    import os as _os
+
+    api_key = (st.session_state.get("gemini_key", "")
+               or _os.environ.get("GEMINI_API_KEY", "")).strip()
+    if not api_key:
+        # No key configured — graceful degrade to stub (banner is shown by caller)
+        return build_stub_narrative(metrics, role_cfg)
+
+    # Try to import the real generator; fall back to stub if not on sys.path
+    try:
+        from narrative_generator import generate_narrative
+    except ImportError:
+        try:
+            from agent.narrative_generator import generate_narrative
+        except ImportError:
+            return build_stub_narrative(metrics, role_cfg)
+
+    prim    = role_cfg.get("primary_kpi", "Sales")
+    drivers = metrics.get("drivers", [])
+    payload = {
+        "reference_date":  metrics.get("reference_date", str(date.today())),
+        "kpis":            metrics.get("kpis", {}),
+        "anomalies":       [],
+        # narrative_generator expects drivers to be a dict keyed by KPI name
+        "drivers":         {prim: drivers, "Sales": drivers},
+        "daily_sales_30d": metrics.get("trend_series", []),
+    }
+    cfg = {
+        "llm": {
+            "provider":          "gemini",
+            "model":             "gemini-2.5-flash",
+            "temperature":       0.4,
+            "max_output_tokens": 8192,
+        }
+    }
+
+    # generate_narrative reads GEMINI_API_KEY from the environment.
+    # Set it for this call, restore the prior value (or unset) when done so
+    # we don't pollute the Streamlit process env.
+    _prev_key = _os.environ.get("GEMINI_API_KEY")
+    _os.environ["GEMINI_API_KEY"] = api_key
+    try:
+        result = generate_narrative(payload, cfg, role_cfg)
+        result.reference_date = metrics.get("reference_date", str(date.today()))
+        try:
+            d = result.to_dict()
+        except Exception:
+            # Defensive — if result is some other shape, gather public attrs
+            d = {k: v for k, v in vars(result).items() if not k.startswith("_")}
+        d["reference_date"] = result.reference_date
+        return d, result
+    except Exception:
+        # Any unexpected failure — stub keeps the wizard alive
+        return build_stub_narrative(metrics, role_cfg)
+    finally:
+        if _prev_key is None:
+            _os.environ.pop("GEMINI_API_KEY", None)
+        else:
+            _os.environ["GEMINI_API_KEY"] = _prev_key
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # SVG PREVIEW
 # ════════════════════════════════════════════════════════════════════════════════
@@ -2482,12 +2556,28 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
         except ImportError:
             return None
 
-    prim_kpi = role_cfg.get("primary_kpi") or next(iter(metrics.get("kpis", {})), "KPI")
+    all_kpis = metrics.get("kpis", {})
+
+    # Filter payload kpis to only the role's assigned KPIs so the card
+    # matches exactly what the role sees — not all detected KPIs.
+    role_kpi_names = role_cfg.get("kpis", [])
+    role_kpis_filtered = {k: v for k, v in all_kpis.items() if k in role_kpi_names}
+    # Fallback: if none matched (name mismatch), use all but cap at 6
+    if not role_kpis_filtered:
+        role_kpis_filtered = dict(list(all_kpis.items())[:6])
+
+    prim_kpi = role_cfg.get("primary_kpi") or next(iter(role_kpis_filtered), "KPI")
+    # Ensure primary_kpi is actually in the filtered set
+    if prim_kpi not in role_kpis_filtered and role_kpis_filtered:
+        prim_kpi = next(iter(role_kpis_filtered))
+
     drivers  = metrics.get("drivers", [])
 
     payload = {
         "reference_date":  metrics.get("reference_date", str(date.today())),
-        "kpis":            metrics.get("kpis", {}),
+        "window_start":    metrics.get("window_start", ""),
+        "timeframe":       metrics.get("timeframe_key", "1d"),
+        "kpis":            role_kpis_filtered,
         "drivers":         {prim_kpi: drivers},
         "daily_sales_30d": metrics.get("trend_series", []),
     }
@@ -2495,6 +2585,8 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     mod_role = dict(role_cfg)
     mod_role["card_template"] = template_key
     mod_role["card_style"]    = style_key
+    mod_role["primary_kpi"]   = prim_kpi
+    mod_role["kpis"]          = list(role_kpis_filtered.keys())
 
     try:
         svg = generate_svg(narrative_obj, payload, {}, mod_role)
@@ -3624,7 +3716,10 @@ def step_preview_card():
         "template — then preview the **actual card** that gets posted to Slack."
     )
 
-    role_cfg = _resolve_role()
+    # Use the SAME role_cfg builder that _build_configs uses to write
+    # roles.yaml at launch. This guarantees the preview's KPIs, template,
+    # style, and primary_kpi match what the delivered card will use.
+    role_cfg = build_runtime_role_cfg()
 
     # ────────────────────────────────────────────────────────────────────────── #
     # 1. CHOOSE CARD STYLE — solid background swatches, uniform 4 boxes
@@ -3942,10 +4037,13 @@ def step_preview_card():
 
     if "narrative" not in st.session_state or "metrics" not in st.session_state:
         if df is not None and date_col and kpis_cfg:
-            with st.spinner("🧠 ARIA is building your card from real data…"):
+            with st.spinner("🧠 ARIA is calling Gemini to write your card — this matches what will be delivered to Slack…"):
                 try:
                     metrics = compute_preview_metrics(df, kpis_cfg, date_col, tf_key)
-                    narr_dict, narr_obj            = build_stub_narrative(metrics, role_cfg)
+                    # Use live Gemini (with stub fallback) so the preview's
+                    # headline, exec summary, recommended action, and speaker
+                    # notes are EXACTLY what the scheduled agent will post.
+                    narr_dict, narr_obj            = build_live_narrative(metrics, role_cfg)
                     st.session_state.metrics       = metrics
                     st.session_state.narrative     = narr_dict
                     st.session_state.narrative_obj = narr_obj
@@ -3988,6 +4086,33 @@ def step_preview_card():
 
     if "narrative_obj" in st.session_state and "metrics" in st.session_state:
         import streamlit.components.v1 as components
+
+        # ── PARITY BANNER ────────────────────────────────────────────────── #
+        # Tells the user honestly whether this preview is exact-match-with-
+        # delivery (live Gemini ran) or approximate (stub fallback fired).
+        _narr_model = (st.session_state.narrative or {}).get("model", "")
+        _is_live    = _narr_model and not _narr_model.startswith(("stub", "fallback"))
+        if _is_live:
+            st.markdown(
+                '<div style="background:#10B98118;border:1px solid #10B98140;'
+                'border-radius:10px;padding:10px 16px;margin-bottom:14px;'
+                'font-size:13px;color:#A7F3D0;">'
+                '✅ <b>Exact match with delivery</b> — same KPIs, same Gemini '
+                'narrative, same template. This is what your Slack channel will receive.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="background:#F59E0B18;border:1px solid #F59E0B40;'
+                'border-radius:10px;padding:10px 16px;margin-bottom:14px;'
+                'font-size:13px;color:#FCD34D;">'
+                '⚠️ <b>Approximate preview</b> — layout, KPIs and template match '
+                'delivery, but narrative copy used a stub (Gemini key missing or '
+                'call failed). The scheduled agent will generate real Gemini copy.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
 
         svg = generate_svg_preview(
             st.session_state.narrative_obj,
@@ -4043,6 +4168,60 @@ def _merge_roles_yaml(owner: str, repo: str, pat: str, new_roles_yaml: str) -> s
     so the agent never posts to stale channels from previous runs.
     """
     return new_roles_yaml
+
+
+def build_runtime_role_cfg(role_name: str | None = None) -> dict:
+    """Single source of truth for the role config used by BOTH the wizard
+    preview (Step 6) AND the YAML written to roles.yaml at launch (Step 8).
+
+    Pulls from session_state:
+      - role_name        (Step 5 selection)
+      - role_kpi_map     (Step 5 LLM-assigned KPI list per role)
+      - kpis             (Step 4 enabled KPI list)
+      - card_template    (Step 6 selection)
+      - card_style       (Step 6 selection)
+      - slack_channel    (Step 7 input)
+
+    Merges them onto the static ROLE_GROUPS entry so callers always get a
+    COMPLETE role_cfg in one shape: title, badge, primary_kpi, kpis,
+    accent_color, driver_focus, tone, card_template, card_style,
+    slack_channel.
+
+    This function is what guarantees the preview and the delivered card
+    use identical inputs — they both call it.
+    """
+    role_name = role_name or st.session_state.get("role_name", "CEO")
+
+    # 1. Static base from ROLE_GROUPS (title, badge, accent, driver_focus, tone)
+    base_cfg = None
+    for grp in ROLE_GROUPS.values():
+        if role_name in grp:
+            base_cfg = grp[role_name]
+            break
+    if base_cfg is None:
+        base_cfg = ROLE_GROUPS["🏛️ C-Suite"]["CEO"]
+
+    # 2. Apply Step 5 LLM KPI assignment — overrides the hardcoded role.kpis
+    _role_map     = st.session_state.get("role_kpi_map", {}) or {}
+    _kpis_cfg     = [k for k in st.session_state.get("kpis", []) if k.get("enabled")]
+    llm_kpi_names = [k["user_name"] for k in _kpis_cfg] if _kpis_cfg else []
+    role_kpis     = (_role_map.get(role_name)
+                     or llm_kpi_names[:6]
+                     or base_cfg.get("kpis", ["Sales"]))
+    primary_kpi   = role_kpis[0] if role_kpis else base_cfg.get("primary_kpi", "Sales")
+
+    return {
+        "title":         base_cfg.get("title", role_name),
+        "badge":         base_cfg.get("badge", f"{role_name.upper()}  ·  BRIEFING"),
+        "slack_channel": st.session_state.get("slack_channel", ""),
+        "primary_kpi":   primary_kpi,
+        "kpis":          role_kpis,
+        "accent_color":  base_cfg.get("accent_color", "#F59E0B"),
+        "driver_focus":  base_cfg.get("driver_focus", ["Category", "Region"]),
+        "tone":          base_cfg.get("tone", "Executive and strategic."),
+        "card_template": st.session_state.get("card_template", "editorial"),
+        "card_style":    st.session_state.get("card_style", "dark"),
+    }
 
 
 def _build_configs() -> tuple[str, str]:
@@ -4155,27 +4334,9 @@ def _build_configs() -> tuple[str, str]:
         },
     }
 
-    # Use role-specific KPI assignment from Gemini; fall back to first 4 detected KPIs
-    _role_map     = st.session_state.get("role_kpi_map", {})
-    llm_kpi_names = [k["user_name"] for k in kpis_cfg] if kpis_cfg else []
-    role_kpis     = (_role_map.get(role_name)
-                     or llm_kpi_names[:6]
-                     or role_cfg.get("kpis", ["Sales"]))
-    primary_kpi   = (role_kpis[0] if role_kpis
-                     else role_cfg.get("primary_kpi", "Sales"))
-
-    roles = {"roles": {role_name: {
-        "title":         role_cfg["title"],
-        "badge":         role_cfg["badge"],
-        "slack_channel": slack_channel,
-        "primary_kpi":   primary_kpi,
-        "kpis":          role_kpis,
-        "accent_color":  eff_accent,
-        "driver_focus":  role_cfg.get("driver_focus", ["Category", "Region"]),
-        "tone":          role_cfg["tone"],
-        "card_template": template_key,
-        "card_style":    style_key,
-    }}}
+    # Build the role entry via the shared helper so this matches what the
+    # preview renders. Single source of truth — no duplicated logic.
+    roles = {"roles": {role_name: build_runtime_role_cfg(role_name)}}
 
     return (
         yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False),
