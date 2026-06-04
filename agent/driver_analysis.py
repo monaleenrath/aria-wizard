@@ -1,8 +1,10 @@
 """
 driver_analysis.py
 ------------------
-Explains *why* a KPI moved by decomposing it across dimensions
-(Category, Sub-Category, Region, Segment, Ship Mode).
+Explains *why* a KPI moved by decomposing it across dimensions.
+
+Compares the SAME date window used by metrics_engine (full timeframe range)
+vs the equivalent prior-period window — NOT just single day vs single day.
 
 For each dimension and each KPI it returns:
   - Top contributors  (biggest absolute positive change)
@@ -29,6 +31,23 @@ class DriverItem:
     delta: float
     delta_pct: Optional[float]
     contribution_pct: Optional[float]  # of total delta for that KPI
+
+
+def _compute_start_date(reference_date: date, timeframe: str) -> date:
+    """Mirror of metrics_engine._compute_start_date — keep in sync."""
+    if timeframe == "wtd":
+        return reference_date - timedelta(days=reference_date.weekday())
+    if timeframe == "mtd":
+        return reference_date.replace(day=1)
+    if timeframe == "qtd":
+        q_start_month = ((reference_date.month - 1) // 3) * 3 + 1
+        return date(reference_date.year, q_start_month, 1)
+    if timeframe == "ytd":
+        return date(reference_date.year, 1, 1)
+    if timeframe == "alltime":
+        return date(2000, 1, 1)
+    # 1d — single day
+    return reference_date
 
 
 def _agg(df: pd.DataFrame, dim: str, kpi: str,
@@ -62,30 +81,41 @@ def analyze_drivers(
     """
     Decompose KPI deltas across dimensions.
 
+    Uses the same date window as metrics_engine (driven by config timeframe),
+    then shifts that window back by the compare_to offset for the prior period.
+
     compare_to : 'dod' | 'wow' | 'mom' | 'yoy'
     """
-    dims = config["drivers"]["dimensions"]
-    top_n = top_n or config["drivers"].get("top_n", 3)
+    dims     = config["drivers"]["dimensions"]
+    top_n    = top_n or config["drivers"].get("top_n", 3)
     date_col = config["data"]["date_column"]
+    timeframe = config.get("metrics", {}).get("timeframe", "1d")
 
     df = df.copy()
     df["_date"] = pd.to_datetime(df[date_col]).dt.date
 
-    offset_map = {
-        "dod": timedelta(days=1),
-        "wow": timedelta(days=7),
-        "mom": pd.DateOffset(months=1),
-        "yoy": pd.DateOffset(years=1),
-    }
-    offset = offset_map[compare_to]
+    # ── Current window (mirrors metrics_engine logic) ─────────────────────── #
+    curr_start = _compute_start_date(reference_date, timeframe)
+    window_days = max((reference_date - curr_start).days + 1, 1)
 
-    if isinstance(offset, pd.DateOffset):
-        prior_date = (pd.Timestamp(reference_date) - offset).date()
+    # ── Prior window — same length shifted back ───────────────────────────── #
+    # For YoY comparison shift by 1 year; otherwise shift by window length
+    if compare_to == "yoy":
+        try:
+            prior_end   = date(reference_date.year - 1,
+                               reference_date.month, reference_date.day)
+            prior_start = date(curr_start.year - 1,
+                               curr_start.month, curr_start.day)
+        except ValueError:
+            # leap-day edge case
+            prior_end   = reference_date - timedelta(days=365)
+            prior_start = curr_start    - timedelta(days=365)
     else:
-        prior_date = reference_date - offset
+        prior_end   = reference_date - timedelta(days=window_days)
+        prior_start = curr_start     - timedelta(days=window_days)
 
-    today_df = df[df["_date"] == reference_date]
-    prior_df = df[df["_date"] == prior_date]
+    curr_df  = df[(df["_date"] >= curr_start)  & (df["_date"] <= reference_date)]
+    prior_df = df[(df["_date"] >= prior_start) & (df["_date"] <= prior_end)]
 
     # Build a lookup from KPI name → config dict
     kpi_cfgs = {k["name"]: k for k in config.get("metrics", {}).get("kpis", [])}
@@ -101,13 +131,12 @@ def analyze_drivers(
 
     for kpi in kpis_to_decompose:
         items: List[DriverItem] = []
-        total_delta = 0.0
         cfg = kpi_cfgs.get(kpi)
 
         for dim in dims:
-            if dim not in today_df.columns:
+            if dim not in curr_df.columns:
                 continue
-            curr = _agg(today_df, dim, kpi, cfg)
+            curr  = _agg(curr_df,  dim, kpi, cfg)
             prior = _agg(prior_df, dim, kpi, cfg)
             members = sorted(set(curr.index) | set(prior.index))
             for m in members:
@@ -127,11 +156,6 @@ def analyze_drivers(
                         contribution_pct=None,
                     )
                 )
-
-        total_delta = sum(
-            i.delta for i in items
-            if i.dimension == dims[0]  # avoid double-counting across dims
-        )
 
         # Contribution % of total delta (computed within each dim)
         by_dim: Dict[str, List[DriverItem]] = {}
