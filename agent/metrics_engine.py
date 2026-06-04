@@ -255,8 +255,65 @@ def compute_metrics(
             format=fmt,
         )
 
-    # Derived metrics — only computed when the relevant KPIs exist
-    # (works for any dataset, not just Superstore)
+    # ── Derived / ratio KPIs from config ──────────────────────────────────── #
+    # Process any KPI declared with agg="ratio" directly in config.yaml.
+    # These are computed from curr_df columns rather than from already-computed
+    # KPI values, so they work for any dataset.
+    for _kpi_cfg in kpi_cfgs:
+        if _kpi_cfg.get("agg") != "ratio":
+            continue
+        _name    = _kpi_cfg["name"]
+        _num_col = _kpi_cfg.get("num_col") or _kpi_cfg.get("column")
+        _den_col = _kpi_cfg.get("den_col")
+        _scale   = float(_kpi_cfg.get("scale", 1))
+        _fmt_type = _kpi_cfg.get("format", "percent")
+        if not _num_col or not _den_col:
+            continue
+        if _num_col not in curr_df.columns or _den_col not in curr_df.columns:
+            continue
+        _num = float(curr_df[_num_col].sum())
+        _den = float(curr_df[_den_col].sum())
+        if _den == 0:
+            _val = 0.0
+        else:
+            _val = _num / _den * _scale
+        if _name not in kpis:   # don't overwrite if already computed
+            kpis[_name] = KPI(
+                name=_name, value=_val, value_fmt=_fmt(_val, _fmt_type),
+                dod_pct=None, wow_pct=None, mom_pct=None, yoy_pct=None,
+                direction=_direction(_val - 0.1, threshold=0.0),
+                format=_fmt_type,
+            )
+
+    # ── Auto-derive Margin% if not already in kpis ────────────────────────── #
+    # Find the first revenue-like (currency, sum) and profit-like KPI dynamically.
+    # This covers datasets that don't declare an explicit ratio KPI in config.
+    if "Margin%" not in kpis and "Profit Margin %" not in kpis:
+        _rev_kpi    = next(
+            (k for k in kpi_cfgs
+             if k.get("format") == "currency" and k.get("agg") == "sum"
+             and any(w in k["name"].lower() for w in ("revenue", "sales", "income"))),
+            None,
+        )
+        _profit_kpi = next(
+            (k for k in kpi_cfgs
+             if k.get("format") == "currency" and k.get("agg") == "sum"
+             and any(w in k["name"].lower() for w in ("profit", "margin", "net"))),
+            None,
+        )
+        if _rev_kpi and _profit_kpi and _rev_kpi["name"] != _profit_kpi["name"]:
+            _rev_val    = kpis[_rev_kpi["name"]].value    if _rev_kpi["name"]    in kpis else 0.0
+            _profit_val = kpis[_profit_kpi["name"]].value if _profit_kpi["name"] in kpis else 0.0
+            if _rev_val:
+                _margin = _profit_val / _rev_val
+                kpis["Profit Margin %"] = KPI(
+                    "Profit Margin %", _margin, _fmt(_margin, "percent"),
+                    None, None, None, None,
+                    _direction(_margin - 0.1, threshold=0.0), "percent",
+                )
+
+    # ── Legacy Superstore derived metrics (AOV, Margin%) ─────────────────── #
+    # Kept for backward compatibility with Superstore dataset.
     sales  = kpis["Sales"].value  if "Sales"  in kpis else None
     profit = kpis["Profit"].value if "Profit" in kpis else None
     orders = kpis["Orders"].value if "Orders" in kpis else None
@@ -265,7 +322,7 @@ def compute_metrics(
         aov = sales / orders
         kpis["AOV"] = KPI("AOV", aov, _fmt(aov, "currency"),
                           None, None, None, None, "flat", "currency")
-    if sales is not None and profit is not None and sales:
+    if sales is not None and profit is not None and sales and "Margin%" not in kpis:
         margin = profit / sales
         kpis["Margin%"] = KPI("Margin%", margin, _fmt(margin, "percent"),
                               None, None, None, None,
