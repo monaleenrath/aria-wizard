@@ -2214,12 +2214,141 @@ def _pct(a: float, b: float):
     return None if not b else (a - b) / abs(b)
 
 
+def compute_preview_metrics_v2(
+    df: pd.DataFrame,
+    kpis_cfg: list,
+    date_col: str,
+    timeframe_key: str = "1d",
+) -> dict:
+    """
+    Replaces compute_preview_metrics() — uses the EXACT same agent engines
+    (metrics_engine + driver_analysis) so the wizard preview is guaranteed
+    to match the GitHub Actions generated card.
+
+    Returns a dict with the same keys as the old function so all callers
+    (build_live_narrative, generate_svg_preview) work unchanged.
+    """
+    try:
+        from agent.metrics_engine import compute_metrics
+        from agent.driver_analysis import analyze_drivers, drivers_to_dict
+    except ImportError:
+        try:
+            from metrics_engine import compute_metrics
+            from driver_analysis import analyze_drivers, drivers_to_dict
+        except ImportError:
+            # Hard fallback to old implementation if agent modules unavailable
+            return compute_preview_metrics(df, kpis_cfg, date_col, timeframe_key)
+
+    import datetime as _dt
+
+    # ── Build a config dict identical to what _build_configs() produces ───── #
+    # Detect dimension columns dynamically from the dataframe
+    kpi_cols  = {k.get("column") for k in kpis_cfg} | \
+                {k.get("num_col") for k in kpis_cfg if k.get("num_col")} | \
+                {k.get("den_col") for k in kpis_cfg if k.get("den_col")}
+    date_like = {"date", "time", "year", "month", "quarter", "week", "day"}
+    dim_cols  = [
+        c for c in df.columns
+        if c not in kpi_cols and c != date_col
+        and df[c].dtype == object
+        and not any(d in c.lower() for d in date_like)
+        and df[c].nunique() < 50
+    ][:6] or ["Category", "Region", "Segment"]
+
+    config = {
+        "data": {
+            "date_column":                   date_col,
+            "timezone":                      "America/Toronto",
+            "fallback_to_max_date_if_missing": True,
+        },
+        "metrics": {
+            "timeframe": timeframe_key,
+            "kpis": [
+                {
+                    "name":   k["user_name"],
+                    "column": k.get("column", k["user_name"]),
+                    "agg":    k.get("agg", "sum"),
+                    "format": k.get("format", "number"),
+                    **({
+                        "num_col":  k["num_col"],
+                        "den_col":  k["den_col"],
+                        "den_agg":  k.get("den_agg", "sum"),
+                        "scale":    k.get("scale", 1),
+                    } if k.get("agg") == "ratio" else {}),
+                }
+                for k in kpis_cfg if k.get("enabled", True)
+            ],
+            "anomaly_zscore_threshold": 2.0,
+            "anomaly_lookback_days":    90,
+        },
+        "drivers": {
+            "dimensions": dim_cols,
+            "top_n": 3,
+        },
+        "delivery": {"channels": [], "file": {"output_dir": "output"}},
+    }
+
+    # ── Run the actual agent engines ─────────────────────────────────────── #
+    try:
+        snapshot = compute_metrics(df, config)
+    except Exception:
+        return compute_preview_metrics(df, kpis_cfg, date_col, timeframe_key)
+
+    ref = _dt.date.fromisoformat(snapshot.reference_date)
+
+    try:
+        drivers_yoy = analyze_drivers(df, config, ref, compare_to="yoy")
+        drivers_raw = drivers_to_dict(drivers_yoy)
+    except Exception:
+        drivers_raw = {}
+
+    # ── Sparkline — 30-day daily series for the primary KPI ──────────────── #
+    trend_series: list = []
+    try:
+        _first_kpi  = next((k for k in kpis_cfg if k.get("enabled", True)), None)
+        _spark_col  = (_first_kpi.get("column") or _first_kpi.get("num_col", "")) \
+                      if _first_kpi else ""
+        if _spark_col and _spark_col in df.columns:
+            _df_spark = df.copy()
+            _df_spark["_date"] = pd.to_datetime(_df_spark[date_col]).dt.date
+            _thirty_ago = ref - timedelta(days=29)
+            _df_spark = _df_spark[
+                (_df_spark["_date"] >= _thirty_ago) &
+                (_df_spark["_date"] <= ref)
+            ]
+            trend_series = (
+                _df_spark.groupby("_date")[_spark_col]
+                .sum().sort_index().tolist()
+            )
+    except Exception:
+        trend_series = []
+
+    # ── Flatten drivers to a list for backward-compat with callers ────────── #
+    # Callers (build_live_narrative, generate_svg_preview) expect either:
+    #   - flat list [{dimension, member, delta, ...}]  (old format)
+    #   - or dict {kpi_name: [...]}                    (agent format)
+    # We return the dict format — callers updated to handle both.
+    prim_kpi = (
+        snapshot.kpis[next(iter(snapshot.kpis), "")].name
+        if snapshot.kpis else "KPI"
+    )
+
+    payload = snapshot.to_dict()   # already has reference_date, window_start,
+                                   # timeframe, kpis (with value_fmt, mom_pct etc.)
+    payload["drivers"]      = drivers_raw   # dict {kpi_name: [DriverItem dicts]}
+    payload["trend_series"] = trend_series
+    payload["timeframe_key"] = timeframe_key
+    return payload
+
+
 def compute_preview_metrics(
     df: pd.DataFrame,
     kpis_cfg: list,
     date_col: str,
     timeframe_key: str = "30d",
 ) -> dict:
+    """DEPRECATED — use compute_preview_metrics_v2() instead.
+    Kept as fallback only."""
     """
     Compute KPI metrics for the selected timeframe window.
 
@@ -2499,13 +2628,24 @@ def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
             return build_stub_narrative(metrics, role_cfg)
 
     prim    = role_cfg.get("primary_kpi", "Sales")
-    drivers = metrics.get("drivers", [])
+    _raw_drivers = metrics.get("drivers", {})
+    # Support both formats:
+    #   new: dict {kpi_name: [DriverItem dicts]}  — from compute_preview_metrics_v2
+    #   old: flat list [{dimension, member, delta}] — from compute_preview_metrics
+    if isinstance(_raw_drivers, dict):
+        drivers_dict = _raw_drivers
+        # Ensure primary KPI key exists
+        if prim not in drivers_dict and drivers_dict:
+            drivers_dict[prim] = next(iter(drivers_dict.values()), [])
+    else:
+        drivers_dict = {prim: _raw_drivers}
     payload = {
         "reference_date":  metrics.get("reference_date", str(date.today())),
+        "window_start":    metrics.get("window_start", ""),
+        "timeframe":       metrics.get("timeframe", metrics.get("timeframe_key", "1d")),
         "kpis":            metrics.get("kpis", {}),
-        "anomalies":       [],
-        # narrative_generator expects drivers to be a dict keyed by KPI name
-        "drivers":         {prim: drivers, "Sales": drivers},
+        "anomalies":       metrics.get("anomalies", []),
+        "drivers":         drivers_dict,
         "daily_sales_30d": metrics.get("trend_series", []),
     }
     cfg = {
@@ -2571,14 +2711,23 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     if prim_kpi not in role_kpis_filtered and role_kpis_filtered:
         prim_kpi = next(iter(role_kpis_filtered))
 
-    drivers  = metrics.get("drivers", [])
+    # Drivers — handle both new dict format and old flat-list format
+    _raw_drivers = metrics.get("drivers", {})
+    if isinstance(_raw_drivers, dict):
+        # New format from compute_preview_metrics_v2 — already {kpi_name: [...]}
+        drivers_dict = _raw_drivers
+        if prim_kpi not in drivers_dict and drivers_dict:
+            drivers_dict[prim_kpi] = next(iter(drivers_dict.values()), [])
+    else:
+        # Old flat-list format
+        drivers_dict = {prim_kpi: _raw_drivers}
 
     payload = {
         "reference_date":  metrics.get("reference_date", str(date.today())),
         "window_start":    metrics.get("window_start", ""),
-        "timeframe":       metrics.get("timeframe_key", "1d"),
+        "timeframe":       metrics.get("timeframe", metrics.get("timeframe_key", "1d")),
         "kpis":            role_kpis_filtered,
-        "drivers":         {prim_kpi: drivers},
+        "drivers":         drivers_dict,
         "daily_sales_30d": metrics.get("trend_series", []),
     }
 
@@ -4039,7 +4188,7 @@ def step_preview_card():
         if df is not None and date_col and kpis_cfg:
             with st.spinner("🧠 ARIA is calling Gemini to write your card — this matches what will be delivered to Slack…"):
                 try:
-                    metrics = compute_preview_metrics(df, kpis_cfg, date_col, tf_key)
+                    metrics = compute_preview_metrics_v2(df, kpis_cfg, date_col, tf_key)
                     # Use live Gemini (with stub fallback) so the preview's
                     # headline, exec summary, recommended action, and speaker
                     # notes are EXACTLY what the scheduled agent will post.
