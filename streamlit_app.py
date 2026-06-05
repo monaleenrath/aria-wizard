@@ -1727,62 +1727,118 @@ def _validate_kpis_against_df(kpis_raw: list, df: pd.DataFrame) -> list:
     """Drop any KPI whose required columns don't exist in df."""
     valid_cols = set(df.columns.tolist())
     out = []
+    seen_names = set()
     for k in kpis_raw:
         if k.get("agg") == "ratio":
+            # Ratio KPIs use num_col + den_col — column field may be "DERIVED" or absent
             if k.get("num_col") not in valid_cols or k.get("den_col") not in valid_cols:
                 continue
-            k.setdefault("column", k["num_col"])
+            # Set column to num_col so downstream code has something to reference
+            k["column"] = k["num_col"]
+            k["kpi_type"] = "derived"
         else:
-            if k.get("column") not in valid_cols:
+            col = k.get("column", "")
+            if col == "DERIVED" or col not in valid_cols:
                 continue
-        k.setdefault("suggested_name", k.get("name", k.get("column", "KPI")))
-        k.setdefault("user_name",      k["suggested_name"])
+        # Deduplicate by name
+        name = k.get("name", k.get("column", "KPI"))
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        k.setdefault("suggested_name", name)
+        k.setdefault("user_name",      name)
         k.setdefault("enabled",        True)
         k.setdefault("kpi_type",       "direct")
+        k.setdefault("scale",          1)
         out.append(k)
     return out
 
 
 def _build_kpi_prompt(df: pd.DataFrame) -> str:
-    col_types = {c: str(df[c].dtype) for c in df.columns}
-    sample    = df.head(3).to_dict(orient="records")   # 3 rows keeps prompt short
-    return f"""You are a senior data analyst and KPI expert working with business leadership teams.
+    col_types  = {c: str(df[c].dtype) for c in df.columns}
+    sample     = df.head(3).to_dict(orient="records")
+    # Compute basic stats to help Gemini understand numeric ranges
+    num_cols   = df.select_dtypes(include="number").columns.tolist()
+    col_stats  = {
+        c: {"min": round(float(df[c].min()), 2),
+            "max": round(float(df[c].max()), 2),
+            "mean": round(float(df[c].mean()), 2)}
+        for c in num_cols[:12]   # cap to keep prompt size reasonable
+    }
+    return f"""You are a Chief Analytics Officer with deep domain expertise across industries.
 
-Analyse this dataset and suggest the most impactful KPIs for executive reporting.
+Your task: analyse this dataset and design a COMPREHENSIVE KPI framework for executive reporting.
+Think like a board member — what metrics reveal risk, opportunity, efficiency, and growth?
 
 DATASET COLUMNS AND TYPES:
 {json.dumps(col_types, indent=2)}
 
+NUMERIC COLUMN STATISTICS (min / max / mean):
+{json.dumps(col_stats, indent=2)}
+
 SAMPLE DATA (first 3 rows):
 {json.dumps(sample, indent=2, default=str)}
 
-INSTRUCTIONS:
-1. Identify the precise business domain (e.g. Quick Service Restaurant, Airlines & Aviation, Retail & E-Commerce, Banking & Finance)
-2. Suggest exactly 8 KPIs that a C-Suite would track for this domain
-3. ONLY use columns that EXIST in this dataset — never invent column names
-4. For ratio KPIs both num_col and den_col must exist in the dataset
-5. Keep "description" under 8 words. Keep "formula" under 6 words.
+STEP 1 — Identify the business domain precisely (e.g. "Airlines & Aviation", "Quick Service Restaurant", "Retail & E-Commerce", "Logistics & Supply Chain", "Healthcare", "Banking & Finance").
 
-Return ONLY a JSON object — no markdown, no prose:
+STEP 2 — Design 10 to 15 KPIs. Go BEYOND simple totals. Include:
+
+  A. SIMPLE DIRECT KPIs — totals, averages, unique counts (2-3 max)
+     e.g. Total Revenue, Total Passengers, Unique Routes
+
+  B. RATIO / RATE KPIs — percentage or rate derived from two columns (4-6 KPIs)
+     e.g. Profit Margin % = Profit / Revenue
+          On-Time Rate % = On-Time Flights / Total Flights
+          Load Factor % = Passengers / Capacity
+          Avg Revenue per Passenger = Revenue / Passengers
+          Return Rate % = Returns / Orders
+          Conversion Rate % = Conversions / Visits
+
+  C. EFFICIENCY / PRODUCTIVITY KPIs — how much output per unit of input (2-3 KPIs)
+     e.g. Revenue per Flight, Revenue per Employee, Sales per Store
+          Avg Delay Minutes = mean(Delay column)
+          Fuel Efficiency = Revenue / Fuel Cost
+          Cost per Passenger = Cost / Passengers
+
+  D. QUALITY / RISK KPIs — anomaly, failure, or exception metrics (2-3 KPIs)
+     e.g. Delayed Flights Count = sum of a boolean/flag delay column if it exists
+          Cancellation Rate % = Cancelled / Total
+          Complaint Rate, Defect Rate, Churn Rate
+
+RULES:
+1. ONLY use column names that EXACTLY EXIST in the dataset — never invent column names
+2. For ratio KPIs: both num_col AND den_col must exist in the dataset
+3. Do NOT create two KPIs that measure the same thing in different units or currencies
+   (e.g. if Revenue and Revenue EUR have identical values, include only one)
+4. Be domain-specific — name KPIs the way an industry expert would name them
+5. Keep "description" under 10 words. Keep "formula" under 8 words.
+6. For "agg": use "ratio" for any KPI derived from two columns (A/B), "mean" for averages, "sum" for totals, "nunique" for unique counts
+
+Return ONLY a valid JSON object — no markdown, no prose, no explanation:
 {{
   "domain": "snake_case_id",
   "domain_label": "Human Readable Label",
-  "domain_emoji": "emoji",
+  "domain_emoji": "single emoji",
   "kpis": [
     {{
-      "name": "KPI Name",
-      "column": "exact column name",
+      "name": "KPI Display Name",
+      "column": "exact_column_name or DERIVED if ratio",
       "agg": "sum|mean|nunique|ratio",
-      "format": "currency|integer|percent|decimal",
-      "formula": "e.g. SUM(Revenue)",
-      "description": "max 8 words",
+      "format": "currency|integer|percent|number",
+      "formula": "e.g. SUM(Revenue) or Profit/Revenue*100",
+      "description": "what this measures in ≤10 words",
       "kpi_type": "direct|derived",
-      "num_col": "col (ratio only)",
-      "den_col": "col (ratio only)",
-      "den_agg": "sum|nunique (ratio only)"
+      "num_col": "numerator column name (ratio KPIs only)",
+      "den_col": "denominator column name (ratio KPIs only)",
+      "den_agg": "sum|nunique (ratio KPIs only)",
+      "scale": 100
     }}
   ]
-}}"""
+}}
+
+For ratio KPIs that are percentages, set scale=100 and format="percent".
+For ratio KPIs that are plain rates (e.g. revenue per unit), set scale=1 and format="currency" or "number".
+"""
 
 
 def _robust_json_parse(raw: str) -> dict:
@@ -2061,14 +2117,9 @@ def _assign_kpis_to_roles_fallback(kpis: list) -> dict:
         scored   = sorted(kpi_names,
                           key=lambda n: _score(n, keywords),
                           reverse=True)
-        # Always fill up to 4; append remaining KPIs if not enough strong matches
-        assigned = scored[:4]
-        for extra in kpi_names:
-            if len(assigned) >= 4:
-                break
-            if extra not in assigned:
-                assigned.append(extra)
-        result[role] = assigned[:4]
+        # Take top scored KPIs — no fixed cap, min 3, max all available
+        assigned = scored[:max(3, len(kpi_names))]
+        result[role] = assigned
     return result
 
 
@@ -2094,31 +2145,33 @@ def _assign_kpis_to_roles_gemini(kpis: list, domain_label: str) -> dict | None:
 The following KPIs have been detected in the dataset:
 {kpi_summary}
 
-Assign the 4 most relevant KPIs to each business role below. Consider each role's tier, priorities and what they would track daily.
+Assign the most relevant KPIs to each business role below. Consider each role's tier, priorities and what they would track daily.
 
 Roles:
 {role_lines}
 
 Rules:
 1. Use ONLY KPI names from the list above — exact spelling
-2. Assign exactly 4 KPIs per role
+2. Assign between 3 and 6 KPIs per role based on genuine relevance — do NOT pad with irrelevant KPIs just to reach a number
 3. First KPI in each list = the primary / hero KPI for that role
 4. Different roles should have different primary KPIs where possible
+5. AVOID DUPLICATE METRICS: if two KPIs measure the same thing in different currencies or units (e.g. "Revenue" and "Revenue (EUR)", "Sales" and "Net Sales", "Profit" and "Profit (EUR)"), assign ONLY ONE of them per role — pick the most business-relevant one. Never assign both to the same role.
+6. Prefer KPIs that give genuinely different business insight for each role
 
 Return ONLY valid JSON — no markdown, no explanation:
 {{
-  "CEO": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "CEO": ["kpi1", "kpi2", "kpi3"],
   "CFO": ["kpi1", "kpi2", "kpi3", "kpi4"],
-  "COO": ["kpi1", "kpi2", "kpi3", "kpi4"],
-  "CTO": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "COO": ["kpi1", "kpi2", "kpi3"],
+  "CTO": ["kpi1", "kpi2", "kpi3"],
   "VP": ["kpi1", "kpi2", "kpi3", "kpi4"],
-  "Director": ["kpi1", "kpi2", "kpi3", "kpi4"],
+  "Director": ["kpi1", "kpi2", "kpi3"],
   "Sales Head": ["kpi1", "kpi2", "kpi3", "kpi4"],
   "Operations Head": ["kpi1", "kpi2", "kpi3", "kpi4"],
-  "Senior Manager": ["kpi1", "kpi2", "kpi3", "kpi4"],
-  "Manager": ["kpi1", "kpi2", "kpi3", "kpi4"],
-  "Team Lead": ["kpi1", "kpi2", "kpi3", "kpi4"],
-  "Business Analyst": ["kpi1", "kpi2", "kpi3", "kpi4"]
+  "Senior Manager": ["kpi1", "kpi2", "kpi3"],
+  "Manager": ["kpi1", "kpi2", "kpi3"],
+  "Team Lead": ["kpi1", "kpi2", "kpi3"],
+  "Business Analyst": ["kpi1", "kpi2", "kpi3", "kpi4", "kpi5"]
 }}"""
 
     try:
@@ -2145,7 +2198,7 @@ Return ONLY valid JSON — no markdown, no explanation:
         # Validate: only keep KPI names that exist in our detected list
         valid = {k["user_name"] for k in enabled_kpis}
         for role in mapping:
-            mapping[role] = [n for n in mapping[role] if n in valid][:4]
+            mapping[role] = [n for n in mapping[role] if n in valid]
         return mapping
     except Exception:
         return None
@@ -2338,6 +2391,85 @@ def compute_preview_metrics_v2(
     payload["drivers"]      = drivers_raw   # dict {kpi_name: [DriverItem dicts]}
     payload["trend_series"] = trend_series
     payload["timeframe_key"] = timeframe_key
+
+    # ── Target / Achievement KPIs (optional) ──────────────────────────────── #
+    # If the user uploaded a target/plan file in Step 2, compute:
+    #   - Achievement % = Actual / Target × 100  (per KPI)
+    #   - Gap to Target  = Actual − Target        (per KPI)
+    # and inject them as additional KPIs into the payload.
+    df_target = st.session_state.get("df_target")
+    if df_target is not None:
+        try:
+            _tf = df_target.copy()
+            _tf["_date"] = pd.to_datetime(_tf[date_col], errors="coerce").dt.date
+            _ref  = snapshot.reference_date  # string
+            import datetime as _dtt
+            _ref_date  = _dtt.date.fromisoformat(_ref)
+            _win_start = _dtt.date.fromisoformat(snapshot.window_start) \
+                         if snapshot.window_start else _ref_date
+            _tgt_win = _tf[(_tf["_date"] >= _win_start) & (_tf["_date"] <= _ref_date)]
+
+            _achievement_kpis = {}
+            for _k in kpis_cfg:
+                if not _k.get("enabled", True):
+                    continue
+                _name   = _k["user_name"]
+                _col    = _k.get("column", "")
+                _agg    = _k.get("agg", "sum")
+                _fmt    = _k.get("format", "number")
+                if _agg == "ratio" or _col == "DERIVED" or _col not in _tgt_win.columns:
+                    continue
+                # Compute target value using same aggregation
+                if _agg == "sum":
+                    _tval = float(_tgt_win[_col].sum())
+                elif _agg == "mean":
+                    _tval = float(_tgt_win[_col].mean()) if len(_tgt_win) else 0.0
+                elif _agg == "nunique":
+                    _tval = float(_tgt_win[_col].nunique())
+                else:
+                    continue
+                if _tval == 0:
+                    continue
+                # Actual value from snapshot
+                _aval = payload["kpis"].get(_name, {}).get("value", 0.0)
+                if not isinstance(_aval, (int, float)):
+                    continue
+                _achiev = (_aval / _tval) * 100
+                _gap    = _aval - _tval
+
+                def _fmt_v(v, fmt):
+                    if fmt == "currency":
+                        av = abs(v)
+                        if av >= 1_000_000: return f"${v/1_000_000:.1f}M"
+                        if av >= 1_000:     return f"${v/1_000:.1f}K"
+                        return f"${v:,.0f}"
+                    if fmt == "percent": return f"{v:.1f}%"
+                    if fmt == "integer": return f"{int(v):,}"
+                    return f"{v:,.1f}"
+
+                _achievement_kpis[f"{_name} Achievement %"] = {
+                    "name":      f"{_name} Achievement %",
+                    "value":     round(_achiev, 2),
+                    "value_fmt": f"{_achiev:.1f}%",
+                    "mom_pct":   None, "yoy_pct": None,
+                    "dod_pct":   None, "wow_pct": None,
+                    "direction": "up" if _achiev >= 100 else "down",
+                    "format":    "percent",
+                }
+                _achievement_kpis[f"{_name} Gap to Target"] = {
+                    "name":      f"{_name} Gap to Target",
+                    "value":     round(_gap, 2),
+                    "value_fmt": _fmt_v(_gap, _fmt),
+                    "mom_pct":   None, "yoy_pct": None,
+                    "dod_pct":   None, "wow_pct": None,
+                    "direction": "up" if _gap >= 0 else "down",
+                    "format":    _fmt,
+                }
+            payload["kpis"].update(_achievement_kpis)
+            payload["has_target"] = True
+        except Exception:
+            pass   # target computation failed silently — card still works
+
     return payload
 
 
@@ -3380,6 +3512,61 @@ def step_upload_data():
                     st.dataframe(df.head(5), use_container_width=True)
                 except Exception as e:
                     st.error(f"Could not load: {e}")
+
+    # ── Target / Forecast / Plan data (optional) ─────────────────────────── #
+    st.divider()
+    st.subheader("🎯 Target / Forecast / Plan Data  *(optional)*")
+    st.caption(
+        "Upload your annual plan, forecast, or budget file. "
+        "ARIA will automatically compute **Achievement %** and **Gap to Target** "
+        "for each KPI and add them to your card. "
+        "Skip this if you don't have target data — the wizard continues normally."
+    )
+
+    _has_target = st.session_state.get("df_target") is not None
+    _tgt_col1, _tgt_col2 = st.columns([3, 1])
+
+    with _tgt_col1:
+        target_uploaded = st.file_uploader(
+            "Drop your target / plan file here (same format as your data file)",
+            type=["xlsx", "xls", "csv"],
+            key="target_file_uploader",
+        )
+
+    with _tgt_col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if _has_target:
+            if st.button("🗑️ Remove target data", use_container_width=True):
+                st.session_state.pop("df_target", None)
+                st.session_state.pop("target_data_name", None)
+                _clear_preview()
+                st.rerun()
+
+    if target_uploaded:
+        try:
+            _tb = target_uploaded.getvalue()
+            if target_uploaded.name.endswith(".csv"):
+                df_target = pd.read_csv(__import__("io").BytesIO(_tb))
+            else:
+                df_target = pd.read_excel(__import__("io").BytesIO(_tb))
+            st.session_state["df_target"]      = df_target
+            st.session_state["target_data_name"] = target_uploaded.name
+            _clear_preview()
+            st.success(
+                f"✅ Target data loaded: **{target_uploaded.name}** "
+                f"— {len(df_target):,} rows × {len(df_target.columns)} columns. "
+                "ARIA will compute Achievement % and Gap to Target for each KPI."
+            )
+            st.dataframe(df_target.head(3), use_container_width=True)
+        except Exception as e:
+            st.error(f"Could not read target file: {e}")
+    elif _has_target:
+        _tn = st.session_state.get("target_data_name", "Target file")
+        _td = st.session_state["df_target"]
+        st.success(
+            f"✅ Target data active: **{_tn}** — {len(_td):,} rows. "
+            "Achievement % and Gap KPIs will appear on your card."
+        )
 
     st.divider()
     st.caption("No file? Use the live Superstore sample (refreshes daily).")
