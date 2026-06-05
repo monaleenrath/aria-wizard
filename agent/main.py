@@ -31,7 +31,7 @@ from agent.driver_analysis import analyze_drivers, drivers_to_dict
 from agent.narrative_generator import generate_narrative
 from agent.report_writer import write_markdown, write_docx
 from agent.slack_publisher import post_image_to_slack, post_to_slack, render_slack_preview
-from agent.svg_generator import generate_svg
+from agent.html_generator import generate_html_card, html_to_png
 from agent.teams_publisher import post_to_teams
 
 
@@ -152,12 +152,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
     role_items = list(roles.items()) if roles else [("General", None)]
     all_results = {}
 
-    try:
-        import cairosvg  # type: ignore
-        _cairosvg_available = True
-    except ImportError:
-        log.warning("cairosvg not installed — PNG cards skipped.")
-        _cairosvg_available = False
+    # Playwright availability is checked inside html_to_png() — no pre-check needed
 
     for role_name, role_cfg in role_items:
         log.info("── Processing role: %s ──────────────────────────────────", role_name)
@@ -175,25 +170,24 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         docx_path = write_docx(narrative, out_dir,
                                f"{snapshot.reference_date}_{safe_role}")
 
-        # SVG → PNG
-        svg_string = generate_svg(narrative, payload, config, role_cfg)
-        svg_path   = os.path.join(out_dir, f"briefing_{snapshot.reference_date}_{safe_role}.svg")
-        with open(svg_path, "w", encoding="utf-8") as fh:
-            fh.write(svg_string)
-        log.info("SVG card written: %s", svg_path)
+        # HTML → PNG via Playwright
+        html_string = generate_html_card(narrative, payload, config, role_cfg)
+        html_path   = os.path.join(out_dir, f"briefing_{snapshot.reference_date}_{safe_role}.html")
+        with open(html_path, "w", encoding="utf-8") as fh:
+            fh.write(html_string)
+        log.info("HTML card written: %s", html_path)
 
         png_bytes: Optional[bytes] = None
         png_path:  Optional[str]   = None
-        if _cairosvg_available:
-            try:
-                png_bytes = cairosvg.svg2png(bytestring=svg_string.encode(), scale=2.0)
-                png_path  = os.path.join(out_dir,
-                            f"briefing_{snapshot.reference_date}_{safe_role}.png")
-                with open(png_path, "wb") as fh:
-                    fh.write(png_bytes)
-                log.info("PNG card written: %s (%d bytes)", png_path, len(png_bytes))
-            except Exception as exc:
-                log.error("PNG conversion failed for %s: %s", role_name, exc)
+        try:
+            png_bytes = html_to_png(html_string, width=900, height=520)
+            png_path  = os.path.join(out_dir,
+                        f"briefing_{snapshot.reference_date}_{safe_role}.png")
+            with open(png_path, "wb") as fh:
+                fh.write(png_bytes)
+            log.info("PNG card written: %s (%d bytes)", png_path, len(png_bytes))
+        except Exception as exc:
+            log.error("PNG conversion failed for %s: %s", role_name, exc)
 
         # Deliver
         role_delivery: dict = {}
