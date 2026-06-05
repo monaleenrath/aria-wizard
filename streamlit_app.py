@@ -2815,43 +2815,42 @@ def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SVG PREVIEW
+# HTML CARD PREVIEW  (replaces SVG preview)
 # ════════════════════════════════════════════════════════════════════════════════
 
 def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
                          style_key: str, template_key: str = "editorial") -> str | None:
+    """
+    Now returns a self-contained HTML string rendered via st.components.v1.html().
+    Name kept as generate_svg_preview() so all call sites work unchanged.
+    """
     try:
-        from svg_generator import generate_svg
+        from agent.html_generator import generate_html_card
     except ImportError:
         try:
-            from agent.svg_generator import generate_svg
+            from html_generator import generate_html_card
         except ImportError:
             return None
 
     all_kpis = metrics.get("kpis", {})
 
-    # Filter payload kpis to only the role's assigned KPIs so the card
-    # matches exactly what the role sees — not all detected KPIs.
-    role_kpi_names = role_cfg.get("kpis", [])
+    # Filter to role-assigned KPIs only
+    role_kpi_names    = role_cfg.get("kpis", [])
     role_kpis_filtered = {k: v for k, v in all_kpis.items() if k in role_kpi_names}
-    # Fallback: if none matched (name mismatch), use all but cap at 6
     if not role_kpis_filtered:
         role_kpis_filtered = dict(list(all_kpis.items())[:6])
 
     prim_kpi = role_cfg.get("primary_kpi") or next(iter(role_kpis_filtered), "KPI")
-    # Ensure primary_kpi is actually in the filtered set
     if prim_kpi not in role_kpis_filtered and role_kpis_filtered:
         prim_kpi = next(iter(role_kpis_filtered))
 
-    # Drivers — handle both new dict format and old flat-list format
+    # Drivers — support dict and flat-list formats
     _raw_drivers = metrics.get("drivers", {})
     if isinstance(_raw_drivers, dict):
-        # New format from compute_preview_metrics_v2 — already {kpi_name: [...]}
         drivers_dict = _raw_drivers
         if prim_kpi not in drivers_dict and drivers_dict:
             drivers_dict[prim_kpi] = next(iter(drivers_dict.values()), [])
     else:
-        # Old flat-list format
         drivers_dict = {prim_kpi: _raw_drivers}
 
     payload = {
@@ -2870,7 +2869,8 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     mod_role["kpis"]          = list(role_kpis_filtered.keys())
 
     try:
-        svg = generate_svg(narrative_obj, payload, {}, mod_role)
+        html = generate_html_card(narrative_obj, payload, {}, mod_role)
+        return html
     except Exception:
         return None
 
@@ -4459,17 +4459,11 @@ def step_preview_card():
         )
 
         if svg:
-            html_page = (
-                "<!DOCTYPE html><html><head><style>"
-                "html,body{margin:0;padding:0;background:transparent;overflow:hidden}"
-                "</style></head>"
-                f"<body>{svg}</body></html>"
-            )
-            components.html(html_page, height=430, scrolling=False)
+            # svg is now a full self-contained HTML string from html_generator
+            components.html(svg, height=560, scrolling=False)
         else:
             st.warning(
-                "Card preview unavailable — check that matplotlib is installed "
-                "(pip install matplotlib). The card renders correctly when the full pipeline runs.",
+                "Card preview unavailable — check agent/html_generator.py is present.",
                 icon="⚠️",
             )
 
