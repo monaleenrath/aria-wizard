@@ -119,6 +119,30 @@ def _resolve_kpis(payload: dict, role: dict):
                 break
     return prim, kpis, all_drivers
 
+
+def _kpi_donut_fallback(kpis: dict, role_kpis: list) -> tuple[list, list]:
+    """Build contribution-mix donut from KPI current values when driver data is absent.
+
+    KPI dicts use key 'value' (raw float) and 'value_fmt' (formatted string).
+    Only include KPIs whose value is a meaningful positive number to avoid
+    zero-filled donuts that Chart.js renders as invisible.
+    """
+    selected = [k for k in role_kpis if k in kpis][:6] or list(kpis.keys())[:6]
+    pairs = []
+    for k in selected:
+        kd = kpis[k]
+        raw = kd.get("value", kd.get("value_fmt", 0)) or 0
+        try:
+            v = abs(float(str(raw).replace(",", "").replace("$", "").replace("%", "").strip()))
+        except (ValueError, TypeError):
+            v = 0.0
+        if v > 0:
+            pairs.append((k[:20], v))
+    if not pairs:
+        return [], []
+    labels, values = zip(*pairs)
+    return list(labels), list(values)
+
 def _rag_color(mom_pct, yoy_pct) -> str:
     v = yoy_pct if yoy_pct is not None else mom_pct
     if v is None: return "#94A3B8"
@@ -156,14 +180,15 @@ def _donut_data(all_drivers: list, top_n: int = 5) -> tuple[list, list]:
 def _base_css(pal: dict, accent: str) -> str:
     return f"""
     * {{ margin:0; padding:0; box-sizing:border-box; }}
+    html {{ background:{pal['bg']}; }}
     body {{
         background:{pal['bg']}; color:{pal['text']};
         font-family:-apple-system,BlinkMacSystemFont,'Inter',Arial,sans-serif;
         font-size:13px; line-height:1.4;
-        width:900px; min-height:500px;
-        overflow:hidden;
+        min-width:900px; overflow-x:hidden;
     }}
     .card {{ width:900px; min-height:500px; background:{pal['bg']};
+             margin:0 auto;
              display:flex; flex-direction:column; padding:20px 28px 0; }}
 
     /* Masthead */
@@ -599,6 +624,8 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
     show_kpis   = [k for k in role_kpis if k in kpis] or list(kpis.keys())[:6]
 
     d_labels, d_values = _donut_data(all_drivers)
+    if not d_values:                                   # fallback: KPI value mix
+        d_labels, d_values = _kpi_donut_fallback(kpis, show_kpis)
     has_donut = bool(d_values)
 
     return f"""
@@ -783,6 +810,8 @@ def _tmpl_board_pack(narrative, payload: dict, role: dict, pal: dict) -> str:
         </div>"""
 
     d_labels, d_values = _donut_data(all_drivers)
+    if not d_values:                                   # fallback: KPI value mix
+        d_labels, d_values = _kpi_donut_fallback(kpis, show_kpis)
     has_donut = bool(d_values)
 
     exec_text = _e(_strip_md(getattr(narrative, "exec_summary", "") or "")[:220])
@@ -886,7 +915,12 @@ def generate_html_card(narrative, payload: dict, _config: dict,
             chart_js += _chart_bar_horizontal("drvchart", d_labels, d_values, d_colors, pal)
 
     elif tmpl_key == "scorecard":
+        kpis_all = payload.get("kpis", {})
+        role_kpis = role.get("kpis", list(kpis_all.keys()))
+        show_kpis = [k for k in role_kpis if k in kpis_all] or list(kpis_all.keys())[:6]
         d_labels, d_values = _donut_data(all_drivers)
+        if not d_values:
+            d_labels, d_values = _kpi_donut_fallback(kpis_all, show_kpis)
         if d_values:
             chart_js += _chart_donut("donut1", d_labels, d_values, accent, prim_real)
 
@@ -901,7 +935,12 @@ def generate_html_card(narrative, payload: dict, _config: dict,
             chart_js += _chart_bar_horizontal("opschart", d_labels, d_values, d_colors, pal)
 
     elif tmpl_key == "board_pack":
+        kpis_all = payload.get("kpis", {})
+        role_kpis = role.get("kpis", list(kpis_all.keys()))
+        show_kpis = [k for k in role_kpis if k in kpis_all] or list(kpis_all.keys())[:6]
         d_labels, d_values = _donut_data(all_drivers)
+        if not d_values:
+            d_labels, d_values = _kpi_donut_fallback(kpis_all, show_kpis)
         if d_values:
             chart_js += _chart_donut("bpdonut", d_labels, d_values, accent)
 
@@ -928,30 +967,79 @@ document.addEventListener('DOMContentLoaded', function() {{
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PNG CONVERSION VIA PLAYWRIGHT
+# PNG CONVERSION VIA SELENIUM + CHROME
 # ══════════════════════════════════════════════════════════════════════════════
 
 def html_to_png(html_str: str, width: int = 900, height: int = 520,
                 wait_ms: int = 1500) -> bytes:
     """
-    Convert HTML card to PNG bytes using Playwright headless Chromium.
+    Convert HTML card to PNG bytes using Selenium headless Chrome.
     Waits for Chart.js to finish rendering before screenshot.
+
+    Requires: pip install selenium
+    Chrome/Chromium must be available on PATH (pre-installed on GitHub
+    Actions ubuntu-latest runners).
     """
+    import os
+    import tempfile
+    import time
+
     try:
-        from playwright.sync_api import sync_playwright
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
     except ImportError:
         raise RuntimeError(
-            "Playwright not installed. Run: pip install playwright && "
-            "playwright install chromium --with-deps"
+            "selenium not installed. Run: pip install selenium"
         )
-    with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--no-sandbox", "--disable-setuid-sandbox"])
-        page    = browser.new_page(viewport={"width": width, "height": height})
-        page.set_content(html_str, wait_until="domcontentloaded")
-        page.wait_for_timeout(wait_ms)   # let Chart.js animate + render
-        png = page.screenshot(
-            clip={"x": 0, "y": 0, "width": width, "height": height},
-            type="png",
-        )
-        browser.close()
+
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument(f"--window-size={width},{height}")
+    options.add_argument("--hide-scrollbars")
+    options.add_argument("--force-device-scale-factor=1")
+
+    # Write HTML to a temp file so Chrome can load it via file://
+    with tempfile.NamedTemporaryFile(
+        suffix=".html", mode="w", delete=False, encoding="utf-8"
+    ) as fh:
+        fh.write(html_str)
+        tmp_path = fh.name
+
+    driver = None
+    try:
+        # Try webdriver-manager first (local dev), fall back to system chromedriver
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+        except Exception:
+            driver = webdriver.Chrome(options=options)
+
+        # Use a very tall initial viewport so the entire card renders without clipping
+        driver.set_window_size(width, 5000)
+        driver.get(f"file://{tmp_path}")
+        time.sleep(wait_ms / 1000)        # let Chart.js animate + render
+
+        # Measure the card's FULL scrollHeight (includes content below the fold)
+        actual_h = driver.execute_script("""
+            var c = document.querySelector('.card');
+            if (!c) c = document.body.firstElementChild || document.body;
+            return Math.ceil(Math.max(c.scrollHeight, c.offsetHeight,
+                                      c.getBoundingClientRect().height));
+        """) or height
+        actual_h = max(int(actual_h), height)
+
+        # Resize viewport to exact card height, then take a clean full-page screenshot
+        driver.set_window_size(width, actual_h + 2)
+        time.sleep(0.3)  # let layout settle after resize
+        png: bytes = driver.get_screenshot_as_png()
+    finally:
+        if driver:
+            driver.quit()
+        os.unlink(tmp_path)
+
     return png
