@@ -2870,16 +2870,33 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
 
     try:
         html = generate_html_card(narrative_obj, payload, {}, mod_role)
-        return html
     except Exception:
         return None
 
-    svg = svg.replace(
-        '<svg viewBox="0 0 800 480"',
-        '<svg width="100%" viewBox="0 0 800 480"',
-        1,
-    )
-    return svg
+    # Inject auto-scale script so the 900px card fits Streamlit's ~700px container.
+    # Runs only in browser/iframe context — has no effect on the PNG export path.
+    scale_script = """
+<script>
+(function scalePreview() {
+    function apply() {
+        var vw = window.innerWidth || document.documentElement.clientWidth || 900;
+        var scale = Math.min(1.0, (vw - 4) / 900);
+        document.body.style.transformOrigin = 'top left';
+        document.body.style.transform = 'scale(' + scale + ')';
+        document.body.style.width = (900 / scale) + 'px';
+        document.documentElement.style.overflow = 'hidden';
+        document.body.style.overflow = 'hidden';
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', apply);
+    } else {
+        apply();
+    }
+    window.addEventListener('resize', apply);
+})();
+</script>"""
+    html = html.replace('</body>', scale_script + '\n</body>')
+    return html
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -4460,7 +4477,7 @@ def step_preview_card():
 
         if svg:
             # svg is now a full self-contained HTML string from html_generator
-            components.html(svg, height=560, scrolling=False)
+            components.html(svg, height=900, scrolling=False)
         else:
             st.warning(
                 "Card preview unavailable — check agent/html_generator.py is present.",
