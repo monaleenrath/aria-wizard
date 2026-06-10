@@ -2020,7 +2020,8 @@ def detect_kpis_llm(df: pd.DataFrame) -> list:
                 st.session_state.detected_domain_emoji = entry.get("domain_emoji", "📊")
                 if "role_kpi_map" in entry:
                     st.session_state.role_kpi_map = entry["role_kpi_map"]
-                return entry["kpis"]
+                # Re-run dedup in case cache was saved before this fix was applied
+                return _deduplicate_kpis(entry["kpis"], df)
         except Exception:
             pass
 
@@ -2038,6 +2039,7 @@ def detect_kpis_llm(df: pd.DataFrame) -> list:
     if result is None:
         st.session_state["_kpi_used_fallback"] = True
         fallback = detect_kpis(df)
+        fallback = _deduplicate_kpis(fallback, df)   # remove duplicates even in fallback
         # Still set a basic domain from the regex detector
         domain_fb = detect_domain(df)
         d_emoji_fb, d_label_fb = _DOMAIN_META.get(domain_fb, ("📊", "Business Analytics"))
@@ -2048,6 +2050,9 @@ def detect_kpis_llm(df: pd.DataFrame) -> list:
 
     # ── 6. Validate columns ───────────────────────────────────────────────── #
     kpis = _validate_kpis_against_df(result.get("kpis", []), df)
+
+    # ── 6b. Deduplicate (name-similarity + value-identity) ───────────────── #
+    kpis = _deduplicate_kpis(kpis, df)
 
     # ── 7. Store domain metadata ──────────────────────────────────────────── #
     d_label = result.get("domain_label", domain)
@@ -2060,6 +2065,113 @@ def detect_kpis_llm(df: pd.DataFrame) -> list:
     _write_kpi_cache(cache_key, result.get("domain", domain), d_label, d_emoji, kpis)
 
     return kpis
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# KPI DEDUPLICATION  (runs right after detection, before user sees Step 3)
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _deduplicate_kpis(kpis: list, df: "pd.DataFrame | None" = None) -> list:
+    """
+    Auto-disable KPIs that are semantically identical to another KPI in the list.
+
+    Pass 1 — Name similarity:
+      Normalise each name by stripping currency/unit suffixes (EUR, USD, %, min …).
+      Within each group that shares the same normalised name, keep the shortest /
+      bracket-free name; disable the rest with a '_duplicate_of' annotation.
+
+    Pass 2 — Value identity (when df is available):
+      For any two *enabled* direct KPIs whose source columns are identical, or whose
+      column values have Pearson r > 0.999, disable the longer-named one.
+    """
+    import re
+    from collections import defaultdict
+
+    _UNIT_RE = re.compile(
+        r'[\s\(\[]*('
+        r'eur|usd|cad|gbp|inr|jpy|aud|chf|sgd|'
+        r'%|pct|percent|rate|ratio|'
+        r'min|mins|minutes|hrs|hours|days|'
+        r'km|mi|miles|'
+        r'k|m|bn|'
+        r'yoy|mom|wow|dod|ytd|mtd|qtd'
+        r')[\s\)\]]*$',
+        re.IGNORECASE,
+    )
+
+    def _norm(name: str) -> str:
+        n = name.strip().lower()
+        n = _UNIT_RE.sub('', n).strip()
+        n = re.sub(r'[^a-z0-9 ]', ' ', n)
+        return re.sub(r'\s+', ' ', n).strip()
+
+    result = [dict(k) for k in kpis]
+
+    # ── Pass 1: name-based dedup ─────────────────────────────────────────── #
+    groups: dict[str, list[int]] = defaultdict(list)
+    for i, k in enumerate(result):
+        groups[_norm(k['user_name'])].append(i)
+
+    for norm, indices in groups.items():
+        if len(indices) < 2:
+            continue
+        # Prefer: no bracket suffix first, then shortest name
+        def _score(idx):
+            name = result[idx]['user_name']
+            return (bool(re.search(r'[\(\[]', name)), len(name))
+        indices_sorted = sorted(indices, key=_score)
+        keep_name = result[indices_sorted[0]]['user_name']
+        for idx in indices_sorted[1:]:
+            if result[idx].get('enabled', True):           # don't clobber already-disabled
+                result[idx]['enabled']      = False
+                result[idx]['_duplicate_of'] = keep_name
+
+    # ── Pass 2: value-based dedup (only when df is available) ───────────── #
+    if df is not None:
+        active = [
+            (i, k) for i, k in enumerate(result)
+            if k.get('enabled', True)
+            and k.get('kpi_type') == 'direct'
+            and k.get('column') in df.columns
+        ]
+        for ai in range(len(active)):
+            i, ki = active[ai]
+            if not result[i].get('enabled', True):
+                continue
+            col_i = ki['column']
+            try:
+                s_i = pd.to_numeric(df[col_i], errors='coerce').dropna()
+            except Exception:
+                continue
+            for aj in range(ai + 1, len(active)):
+                j, kj = active[aj]
+                if not result[j].get('enabled', True):
+                    continue
+                col_j = kj['column']
+                # Same underlying column → always a duplicate
+                if col_i == col_j:
+                    result[j]['enabled']      = False
+                    result[j]['_duplicate_of'] = ki['user_name']
+                    continue
+                try:
+                    s_j = pd.to_numeric(df[col_j], errors='coerce').dropna()
+                    common = s_i.index.intersection(s_j.index)
+                    if len(common) < 10:
+                        continue
+                    corr = s_i.loc[common].corr(s_j.loc[common])
+                    if corr is not None and abs(corr) > 0.999:
+                        # Near-identical values — disable the longer-named one
+                        n_i, n_j = ki['user_name'], kj['user_name']
+                        if len(n_i) <= len(n_j):
+                            result[j]['enabled']      = False
+                            result[j]['_duplicate_of'] = n_i
+                        else:
+                            result[i]['enabled']      = False
+                            result[i]['_duplicate_of'] = n_j
+                except Exception:
+                    continue
+
+    return result
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -3776,6 +3888,33 @@ def step_discover_kpis():
             updated.append({**k, "enabled": enabled, "user_name": user_name})
         st.session_state.kpis = updated
 
+        # ── Keep role_kpi_map in sync with checkbox state ─────────────────── #
+        # Every time the user ticks/unticks a KPI, remove disabled names from
+        # the cached role assignment so Step 4 never shows unchecked KPIs.
+        if "role_kpi_map" in st.session_state:
+            _enabled_set = {k["user_name"] for k in updated if k.get("enabled")}
+            st.session_state.role_kpi_map = {
+                role: [kpi for kpi in kpi_list if kpi in _enabled_set]
+                for role, kpi_list in st.session_state.role_kpi_map.items()
+            }
+
+        # ── Show auto-dedup notice ─────────────────────────────────────────── #
+        _auto_dupes = [k for k in updated if k.get("_duplicate_of") and not k.get("enabled")]
+        if _auto_dupes:
+            with st.expander(
+                f"ℹ️ {len(_auto_dupes)} duplicate KPI{'s' if len(_auto_dupes) > 1 else ''} "
+                f"auto-disabled — click to review",
+                expanded=False,
+            ):
+                st.caption(
+                    "These KPIs measure the same thing as an already-active KPI. "
+                    "Re-enable them above if you need both."
+                )
+                for dk in _auto_dupes:
+                    st.caption(
+                        f"• **{dk['user_name']}** → same as **{dk['_duplicate_of']}**"
+                    )
+
     st.divider()
     with st.expander("➕ Add a custom KPI"):
         m1, m2, m3, m4, m5 = st.columns([2, 2, 1.5, 1.5, 1.5])
@@ -3814,11 +3953,18 @@ def step_pick_role():
     if "role_name" not in st.session_state:
         st.session_state.role_name = "CEO"
 
-    # Role-specific KPI map from Gemini assignment (or fallback)
-    _role_kpi_map = st.session_state.get("role_kpi_map", {})
-    # Flat fallback list if map is empty
-    _flat_kpis    = [k["user_name"] for k in st.session_state.get("kpis", [])
-                     if k.get("enabled")] or ["—"]
+    # Role-specific KPI map from Gemini assignment (or fallback).
+    # Always filter against the CURRENTLY ENABLED KPIs — the user may have
+    # unchecked some in Step 3 after the map was first generated.
+    _enabled_names = {k["user_name"] for k in st.session_state.get("kpis", [])
+                      if k.get("enabled")}
+    _raw_role_kpi_map = st.session_state.get("role_kpi_map", {})
+    _role_kpi_map = {
+        role: [kpi for kpi in kpi_list if kpi in _enabled_names]
+        for role, kpi_list in _raw_role_kpi_map.items()
+    }
+    # Flat fallback list if map is empty or all filtered out
+    _flat_kpis = list(_enabled_names) or ["—"]
 
     for group_name, roles in ROLE_GROUPS.items():
         st.subheader(group_name)
