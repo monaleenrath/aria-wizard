@@ -185,9 +185,9 @@ def _base_css(pal: dict, accent: str) -> str:
         background:{pal['bg']}; color:{pal['text']};
         font-family:-apple-system,BlinkMacSystemFont,'Inter',Arial,sans-serif;
         font-size:13px; line-height:1.4;
-        min-width:900px; overflow-x:hidden;
+        overflow-x:hidden;
     }}
-    .card {{ width:900px; min-height:500px; background:{pal['bg']};
+    .card {{ width:100%; max-width:900px; background:{pal['bg']};
              margin:0 auto;
              display:flex; flex-direction:column; padding:20px 28px 0; }}
 
@@ -819,7 +819,7 @@ def _tmpl_board_pack(narrative, payload: dict, role: dict, pal: dict) -> str:
     spk_text  = _e(_strip_md(getattr(narrative, "speaker_notes", "") or "")[:180])
 
     return f"""
-    <div style="width:900px;min-height:500px;background:{pal['bg']};
+    <div style="width:100%;max-width:900px;background:{pal['bg']};
                 font-family:-apple-system,BlinkMacSystemFont,'Inter',Arial,sans-serif">
         <!-- Formal top bar -->
         <div style="background:{accent_eff};padding:12px 28px;display:flex;
