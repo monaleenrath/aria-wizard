@@ -2873,29 +2873,46 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     except Exception:
         return None
 
-    # Inject auto-scale script so the 900px card fits Streamlit's ~700px container.
-    # Runs only in browser/iframe context — has no effect on the PNG export path.
-    scale_script = """
+    # Inject fluid CSS so the card fills the Streamlit iframe width instead of
+    # overflowing at 900px.  In the PNG path Chrome's viewport IS 900px, so
+    # width:100% still renders at exactly 900px — no change to Slack output.
+    fluid_css = """<style>
+html, body { min-width: 0 !important; width: 100% !important; overflow-x: hidden !important; }
+.card, [class="card"] { width: 100% !important; max-width: 900px !important;
+                         min-width: 0 !important; }
+</style>"""
+    html = html.replace('</head>', fluid_css + '\n</head>')
+
+    # Inject a postMessage script that tells Streamlit the actual rendered
+    # card height so the iframe resizes to fit with no empty space at the bottom.
+    resize_script = """
 <script>
-(function scalePreview() {
-    function apply() {
-        var vw = window.innerWidth || document.documentElement.clientWidth || 900;
-        var scale = Math.min(1.0, (vw - 4) / 900);
-        document.body.style.transformOrigin = 'top left';
-        document.body.style.transform = 'scale(' + scale + ')';
-        document.body.style.width = (900 / scale) + 'px';
-        document.documentElement.style.overflow = 'hidden';
-        document.body.style.overflow = 'hidden';
+(function autoHeight() {
+    function send() {
+        var h = Math.max(
+            document.body.scrollHeight,
+            document.body.offsetHeight,
+            document.documentElement.scrollHeight
+        );
+        window.parent.postMessage(
+            { type: 'streamlit:setFrameHeight', height: h + 24 },
+            '*'
+        );
     }
+    // Fire after Chart.js finishes (two attempts for safety)
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', apply);
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(send, 600);
+            setTimeout(send, 1400);
+        });
     } else {
-        apply();
+        setTimeout(send, 600);
+        setTimeout(send, 1400);
     }
-    window.addEventListener('resize', apply);
+    window.addEventListener('resize', send);
 })();
 </script>"""
-    html = html.replace('</body>', scale_script + '\n</body>')
+    html = html.replace('</body>', resize_script + '\n</body>')
     return html
 
 
@@ -4476,8 +4493,10 @@ def step_preview_card():
         )
 
         if svg:
-            # svg is now a full self-contained HTML string from html_generator
-            components.html(svg, height=900, scrolling=False)
+            # svg is now a full self-contained HTML string from html_generator.
+            # Initial height is 700; the postMessage resize script inside the
+            # HTML adjusts it to the card's actual rendered height automatically.
+            components.html(svg, height=700, scrolling=False)
         else:
             st.warning(
                 "Card preview unavailable — check agent/html_generator.py is present.",
