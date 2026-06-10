@@ -89,7 +89,7 @@ if not _STREAMLIT_TOML.exists():
 st.set_page_config(
     page_title="ARIA Setup Wizard",
     page_icon="⚡",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="collapsed",
 )
 
@@ -1463,8 +1463,8 @@ _DERIVED_PATTERNS: list[dict] = [
     # ── Universal ratios ──────────────────────────────────────────────────── #
     {"num_pattern": r"(^profit$|net.?profit|net.?income|ebit(?!da)|ebitda|earnings|margin.?amount)",
      "den_pattern": r"(sale|revenue|gmv|turnover|net.?sales|income(?!_tax))",
-     "name": "Profit Margin %", "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Profit Margin %", "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Net profit as % of revenue. Tracks pricing power and cost efficiency."},
     {"num_pattern": r"(sale|revenue|gmv|net.?sales)",
      "den_pattern": r"(order.?id|transaction.?id|invoice.?id|ticket.?id|receipt.?id)",
@@ -1480,46 +1480,46 @@ _DERIVED_PATTERNS: list[dict] = [
      "description": "Average revenue per unique customer — tracks customer value."},
     {"num_pattern": r"(discount|rebate)",
      "den_pattern": r"(sale|revenue|gmv|net.?sales)",
-     "name": "Discount Rate %",  "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Discount Rate %",  "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Discounts as % of gross sales. High rates compress margins."},
     {"num_pattern": r"(^cost$|cogs|cost.?of.?goods|^expense$)",
      "den_pattern": r"(sale|revenue|gmv|net.?sales)",
-     "name": "Cost-to-Revenue %","scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Cost-to-Revenue %","scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Operating cost as % of revenue. Lower = more efficient."},
     {"num_pattern": r"(return.?qty|^returns$|refund.?qty|returned)",
      "den_pattern": r"(^qty$|quantity|units?.?sold|pieces?)",
-     "name": "Return Rate %",    "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Return Rate %",    "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "% of units sold that were returned. Signals fulfilment or quality issues."},
     # ── Banking ───────────────────────────────────────────────────────────── #
     {"num_pattern": r"(npl|non.?perform|default.?amount|bad.?debt)",
      "den_pattern": r"(loan.?amount|loan.?disburs|credit.?disburs|^advance$)",
-     "name": "NPL Ratio %",      "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "NPL Ratio %",      "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Non-performing loans as % of total book. Key credit quality indicator."},
     {"num_pattern": r"(loan.?amount|loan.?disburs|^advance$)",
      "den_pattern": r"(^deposit$|total.?deposit|saving.?balance)",
-     "name": "Loan-to-Deposit %","scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Loan-to-Deposit %","scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Loans as % of deposits. Measures funding stability and liquidity."},
     # ── Insurance ─────────────────────────────────────────────────────────── #
     {"num_pattern": r"(claim.?amount|claims.?paid|loss.?amount|incurred.?loss)",
      "den_pattern": r"(^premium$|gwp|gross.?written|written.?premium)",
-     "name": "Loss Ratio %",     "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Loss Ratio %",     "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Claims paid as % of premium. Core insurance profitability metric."},
     # ── Marketing ─────────────────────────────────────────────────────────── #
     {"num_pattern": r"(^clicks?$|link.?click|ad.?click)",
      "den_pattern": r"(impression|ad.?view|view.?count)",
-     "name": "CTR %",            "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "CTR %",            "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Click-Through Rate — % of impressions that resulted in a click."},
     {"num_pattern": r"(^conversion|sign.?up.?count|lead.?convert)",
      "den_pattern": r"(^clicks?$|link.?click|ad.?click)",
-     "name": "Conversion Rate %","scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Conversion Rate %","scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "% of clicks that converted. Measures funnel efficiency."},
     {"num_pattern": r"(sale|revenue|gmv)",
      "den_pattern": r"(ad.?spend|media.?spend|marketing.?spend)",
@@ -1534,15 +1534,15 @@ _DERIVED_PATTERNS: list[dict] = [
     # ── Operations ────────────────────────────────────────────────────────── #
     {"num_pattern": r"(^defect$|reject.?count|scrap.?qty|defective.?unit)",
      "den_pattern": r"(unit.?produc|output.?count|finished.?goods)",
-     "name": "Defect Rate %",    "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Defect Rate %",    "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "% of units produced with defects. Target < 1%."},
     # ── Logistics ─────────────────────────────────────────────────────────── #
     {"num_pattern": r"(on.?time.?flag|otd.?flag|delivered.?on.?time)",
      "den_pattern": r"(shipment.?id|parcel.?id|delivery.?id|consignment.?id)",
      "den_agg": "nunique",
-     "name": "On-Time Delivery %","scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ COUNT DISTINCT({den}) × 100",
+     "name": "On-Time Delivery %","scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ COUNT DISTINCT({den})",
      "description": "% of shipments delivered on time. Industry target > 95%."},
     {"num_pattern": r"(freight.?cost|shipping.?cost|delivery.?cost)",
      "den_pattern": r"(shipment.?id|parcel.?id|delivery.?id)",
@@ -1554,14 +1554,14 @@ _DERIVED_PATTERNS: list[dict] = [
     {"num_pattern": r"(attrition|resign|termination.?count|exit.?count)",
      "den_pattern": r"(employee.?id|emp.?id|staff.?id|^headcount$|workforce.?id)",
      "den_agg": "nunique",
-     "name": "Attrition Rate %", "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ COUNT DISTINCT({den}) × 100",
+     "name": "Attrition Rate %", "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ COUNT DISTINCT({den})",
      "description": "% of workforce that left in the period. High attrition signals engagement risk."},
     # ── Aviation ─────────────────────────────────────────────────────────── #
     {"num_pattern": r"(profit.*eur|^profit$|net.?profit|flight.?profit)",
      "den_pattern": r"(^revenue.*eur|total.?revenue|flight.?revenue)",
-     "name": "Profit Margin %",   "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Profit Margin %",   "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "Net profit as % of revenue — core airline financial health metric."},
     {"num_pattern": r"(^revenue.*eur|total.?revenue|flight.?revenue)",
      "den_pattern": r"(^passenger|total.?pax|pax.?count|^pax$)",
@@ -1570,8 +1570,8 @@ _DERIVED_PATTERNS: list[dict] = [
      "description": "Average revenue per passenger — measures yield per seat sold."},
     {"num_pattern": r"(^rpk$|revenue.?passenger.?km)",
      "den_pattern": r"(^ask$|available.?seat.?km)",
-     "name": "Load Factor (RPK/ASK)", "scale": 100, "format": "percent",
-     "formula_tmpl": "SUM({num}) ÷ SUM({den}) × 100",
+     "name": "Load Factor (RPK/ASK)", "scale": 1, "format": "percent",
+     "formula_tmpl": "SUM({num}) ÷ SUM({den})",
      "description": "RPK÷ASK — efficiency of capacity utilisation."},
 ]
 
@@ -1750,6 +1750,11 @@ def _validate_kpis_against_df(kpis_raw: list, df: pd.DataFrame) -> list:
         k.setdefault("enabled",        True)
         k.setdefault("kpi_type",       "direct")
         k.setdefault("scale",          1)
+        # Sanitize: scale=100 + format="percent" is a double-multiply bug.
+        # _fmt(val, "percent") uses Python's :.1% which already ×100.
+        # Always store ratio KPIs as decimals (scale=1) for percent format.
+        if k.get("scale") == 100 and k.get("format") == "percent":
+            k["scale"] = 1
         out.append(k)
     return out
 
@@ -1831,12 +1836,13 @@ Return ONLY a valid JSON object — no markdown, no prose, no explanation:
       "num_col": "numerator column name (ratio KPIs only)",
       "den_col": "denominator column name (ratio KPIs only)",
       "den_agg": "sum|nunique (ratio KPIs only)",
-      "scale": 100
+      "scale": 1
     }}
   ]
 }}
 
-For ratio KPIs that are percentages, set scale=100 and format="percent".
+For ratio KPIs that are percentages, always set scale=1 and format="percent".
+Python's :.1% format already multiplies by 100, so store the raw ratio as a decimal (0–1 range).
 For ratio KPIs that are plain rates (e.g. revenue per unit), set scale=1 and format="currency" or "number".
 """
 
@@ -4642,7 +4648,7 @@ def step_preview_card():
             # svg is now a full self-contained HTML string from html_generator.
             # Initial height is 700; the postMessage resize script inside the
             # HTML adjusts it to the card's actual rendered height automatically.
-            components.html(svg, height=700, scrolling=False)
+            components.html(svg, height=900, scrolling=False)
         else:
             st.warning(
                 "Card preview unavailable — check agent/html_generator.py is present.",
@@ -5433,7 +5439,7 @@ def step_export_go():
 def main():
     st.markdown("""
     <style>
-      section.main > div { max-width: 860px; margin: 0 auto; }
+      section.main > div { max-width: 1100px; margin: 0 auto; }
       .stButton > button  { border-radius: 8px; font-weight: 600; }
 
       /* ── Green primary buttons (Next, Launch, etc.) ── */
@@ -5563,18 +5569,23 @@ def main():
 
     render_progress()
 
-    step = st.session_state.step
-    if   step == 1: step_welcome()
-    elif step == 2: step_upload_data()
-    elif step == 3: step_choose_ai()
-    elif step == 4: step_discover_kpis()
-    elif step == 5: step_pick_role()
-    elif step == 6: step_preview_card()
-    elif step == 7: step_set_delivery()
-    elif step == 8: step_export_go()
-    else:
-        st.session_state.step = 1
-        st.rerun()
+    # Wrap every step in a single st.empty() placeholder so Streamlit atomically
+    # replaces the entire step area when navigating — prevents ghost widgets from
+    # the previous step briefly appearing during the next step's first render.
+    _step_ph = st.empty()
+    with _step_ph.container():
+        step = st.session_state.step
+        if   step == 1: step_welcome()
+        elif step == 2: step_upload_data()
+        elif step == 3: step_choose_ai()
+        elif step == 4: step_discover_kpis()
+        elif step == 5: step_pick_role()
+        elif step == 6: step_preview_card()
+        elif step == 7: step_set_delivery()
+        elif step == 8: step_export_go()
+        else:
+            st.session_state.step = 1
+            st.rerun()
 
     # ── Subtle attribution ───────────────────────────────────────────────────
     with st.sidebar:
