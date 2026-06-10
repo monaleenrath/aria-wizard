@@ -245,9 +245,9 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
             "headline": narrative.headline,
             "files": {
                 "markdown": md_path,
-                "docx": docx_path,
-                "svg": svg_path,
-                "png": png_path,
+                "docx":     docx_path,
+                "html":     html_path,
+                "png":      png_path,
             },
             "delivery": role_delivery,
         }
