@@ -3050,21 +3050,26 @@ html, body { margin: 0; padding: 0; overflow: hidden; }
         document.body.style.overflow = 'hidden';
 
         // ── 6. Tell Streamlit to resize the iframe ───────────────────────────
+        // isStreamlitMessage:true is required by Streamlit's component message
+        // handler (both old and new versions) — without it the resize is ignored.
         window.parent.postMessage(
-            { type: 'streamlit:setFrameHeight', height: scaledH + 24 },
+            { isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: scaledH + 24 },
             '*'
         );
     }
 
-    // Fire after Chart.js finishes rendering (two passes for safety)
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(apply, 400);
-            setTimeout(apply, 1200);
-        });
-    } else {
-        setTimeout(apply, 400);
+    // Fire at 100ms (fast templates), 500ms, 1200ms, 2500ms (slow Chart.js).
+    // Multiple passes ensure the resize lands regardless of render timing.
+    function scheduleAll() {
+        setTimeout(apply, 100);
+        setTimeout(apply, 500);
         setTimeout(apply, 1200);
+        setTimeout(apply, 2500);
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', scheduleAll);
+    } else {
+        scheduleAll();
     }
     window.addEventListener('resize', apply);
 })();
@@ -4685,11 +4690,12 @@ def step_preview_card():
 
         if svg:
             # svg is now a full self-contained HTML string from html_generator.
-            # Start small (100px) so Streamlit doesn't hold a 700px floor.
-            # The fitAndResize script inside the HTML reports the card's true
-            # scaled height via postMessage, and Streamlit resizes the iframe
-            # up to exactly the right value — no empty space below.
-            components.html(svg, height=100, scrolling=False)
+            # height=700 is a safe floor so cards are never clipped if the
+            # postMessage resize fires slightly late.  The fitAndResize script
+            # inside the HTML sends {isStreamlitMessage:true, type:
+            # 'streamlit:setFrameHeight', height:scaledH} which Streamlit uses
+            # to collapse the iframe to the card's exact visual height.
+            components.html(svg, height=700, scrolling=False)
         else:
             st.warning(
                 "Card preview unavailable — check agent/html_generator.py is present.",
