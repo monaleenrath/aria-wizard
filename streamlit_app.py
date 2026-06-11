@@ -89,7 +89,7 @@ if not _STREAMLIT_TOML.exists():
 st.set_page_config(
     page_title="ARIA Setup Wizard",
     page_icon="⚡",
-    layout="wide",
+    layout="centered",
     initial_sidebar_state="collapsed",
 )
 
@@ -2994,43 +2994,68 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     # Inject fluid CSS so the card fills the Streamlit iframe width instead of
     # overflowing at 900px.  In the PNG path Chrome's viewport IS 900px, so
     # width:100% still renders at exactly 900px — no change to Slack output.
+    # Prevent the iframe body from adding unwanted scrollbars or padding
     fluid_css = """<style>
-html, body { min-width: 0 !important; width: 100% !important; overflow-x: hidden !important; }
-.card, [class="card"] { width: 100% !important; max-width: 900px !important;
-                         min-width: 0 !important; }
+html, body { margin: 0; padding: 0; overflow-x: hidden; background: transparent; }
 </style>"""
     html = html.replace('</head>', fluid_css + '\n</head>')
 
-    # Inject a postMessage script that tells Streamlit the actual rendered
-    # card height so the iframe resizes to fit with no empty space at the bottom.
-    resize_script = """
+    # Scale-to-fit + auto-height script:
+    # 1. Let the card render at its natural width (up to 900px) so internal
+    #    layouts (charts, columns, grids) look exactly as designed.
+    # 2. If the card is wider than the iframe viewport, scale the whole card
+    #    down proportionally — no cropping, no layout reflow.
+    # 3. Report the scaled height back to Streamlit via postMessage so the
+    #    iframe shrinks to fit and no empty space remains at the bottom.
+    fit_and_resize_script = """
 <script>
-(function autoHeight() {
-    function send() {
-        var h = Math.max(
-            document.body.scrollHeight,
-            document.body.offsetHeight,
-            document.documentElement.scrollHeight
+(function fitAndResize() {
+    function apply() {
+        // Find the outermost card element (works across all 5 templates)
+        var card = document.querySelector('.card')
+                || document.querySelector('[class*="card"]')
+                || document.body.firstElementChild;
+        if (!card) return;
+
+        // Reset any previous scale so we measure the natural size
+        card.style.transform      = '';
+        card.style.transformOrigin = 'top left';
+
+        var vw = window.innerWidth || document.documentElement.clientWidth;
+        var cw = card.scrollWidth;
+
+        // Scale down only if needed; never scale up
+        var scale = (cw > 0 && cw > vw) ? (vw / cw) : 1;
+        if (scale < 1) {
+            card.style.transform = 'scale(' + scale + ')';
+        }
+
+        // Report the scaled height back so the iframe fits snugly
+        var naturalH = Math.max(
+            card.scrollHeight,
+            card.offsetHeight
         );
+        var scaledH  = Math.ceil(naturalH * scale);
         window.parent.postMessage(
-            { type: 'streamlit:setFrameHeight', height: h + 24 },
+            { type: 'streamlit:setFrameHeight', height: scaledH + 16 },
             '*'
         );
     }
-    // Fire after Chart.js finishes (two attempts for safety)
+
+    // Fire after Chart.js finishes rendering (two passes for safety)
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(send, 600);
-            setTimeout(send, 1400);
+            setTimeout(apply, 400);
+            setTimeout(apply, 1200);
         });
     } else {
-        setTimeout(send, 600);
-        setTimeout(send, 1400);
+        setTimeout(apply, 400);
+        setTimeout(apply, 1200);
     }
-    window.addEventListener('resize', send);
+    window.addEventListener('resize', apply);
 })();
 </script>"""
-    html = html.replace('</body>', resize_script + '\n</body>')
+    html = html.replace('</body>', fit_and_resize_script + '\n</body>')
     return html
 
 
@@ -4648,7 +4673,7 @@ def step_preview_card():
             # svg is now a full self-contained HTML string from html_generator.
             # Initial height is 700; the postMessage resize script inside the
             # HTML adjusts it to the card's actual rendered height automatically.
-            components.html(svg, height=900, scrolling=False)
+            components.html(svg, height=700, scrolling=False)
         else:
             st.warning(
                 "Card preview unavailable — check agent/html_generator.py is present.",
@@ -5439,7 +5464,7 @@ def step_export_go():
 def main():
     st.markdown("""
     <style>
-      section.main > div { max-width: 1100px; margin: 0 auto; }
+      section.main > div { max-width: 860px; margin: 0 auto; }
       .stButton > button  { border-radius: 8px; font-weight: 600; }
 
       /* ── Green primary buttons (Next, Launch, etc.) ── */
