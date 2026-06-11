@@ -2971,19 +2971,7 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     mod_role["card_style"]    = style_key
     mod_role["primary_kpi"]   = prim_kpi
     mod_role["kpis"]          = list(role_kpis_filtered.keys())
-    # Derive company name from uploaded filename for logo fetch
-    if not mod_role.get("company_name"):
-        import re as _re
-        _fname = ""
-        try:
-            import streamlit as _st
-            _fname = _st.session_state.get("data_name", "")
-        except Exception:
-            pass
-        if _fname:
-            _stem = _re.sub(r"\.\w+$", "", _fname)
-            _co   = _re.split(r"[_\-\s]+", _stem)[0]
-            mod_role["company_name"] = _co.strip()
+    # company_name is already in role_cfg via build_runtime_role_cfg()
 
     try:
         html = generate_html_card(narrative_obj, payload, {}, mod_role)
@@ -4823,6 +4811,12 @@ def build_runtime_role_cfg(role_name: str | None = None) -> dict:
                      or base_cfg.get("kpis", ["Sales"]))
     primary_kpi   = role_kpis[0] if role_kpis else base_cfg.get("primary_kpi", "Sales")
 
+    # Derive company name from the uploaded filename so the agent can
+    # fetch the company logo via Clearbit (e.g. "Lufthansa_2024.xlsx" → "Lufthansa")
+    _raw_fname    = st.session_state.get("data_name", "")
+    _stem         = re.sub(r"\.\w+$", "", _raw_fname)          # strip extension
+    _company_name = re.split(r"[_\-\s]+", _stem)[0].strip()    # first word-segment
+
     return {
         "title":         base_cfg.get("title", role_name),
         "badge":         base_cfg.get("badge", f"{role_name.upper()}  ·  BRIEFING"),
@@ -4834,6 +4828,7 @@ def build_runtime_role_cfg(role_name: str | None = None) -> dict:
         "tone":          base_cfg.get("tone", "Executive and strategic."),
         "card_template": st.session_state.get("card_template", "editorial"),
         "card_style":    st.session_state.get("card_style", "dark"),
+        "company_name":  _company_name,
     }
 
 
