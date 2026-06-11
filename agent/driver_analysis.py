@@ -117,15 +117,43 @@ def analyze_drivers(
     curr_df  = df[(df["_date"] >= curr_start)  & (df["_date"] <= reference_date)]
     prior_df = df[(df["_date"] >= prior_start) & (df["_date"] <= prior_end)]
 
+    import logging as _log
+    _logger = _log.getLogger("agent.driver_analysis")
+
     # Build a lookup from KPI name → config dict
     kpi_cfgs = {k["name"]: k for k in config.get("metrics", {}).get("kpis", [])}
 
-    # Only decompose KPIs that have a real column (skip DERIVED ratio KPIs)
+    # For ratio KPIs, override the decomposition config to use num_col + sum.
+    # The wizard assigns agg:"ratio" + column:"DERIVED" for derived metrics like
+    # "Revenue / Pax" or "Load Factor %".  We decompose the numerator column
+    # so the breakdown charts still have real data to render.
+    for k in config.get("metrics", {}).get("kpis", []):
+        if (k.get("agg") == "ratio"
+                and k.get("num_col")
+                and k.get("num_col") != "DERIVED"):
+            kpi_cfgs[k["name"]] = {**k, "column": k["num_col"], "agg": "sum"}
+
+    # Decompose KPIs that either:
+    #   (a) have a real column with a standard agg (sum/mean/nunique), OR
+    #   (b) are ratio KPIs whose numerator column is a real column
     kpis_to_decompose = [
         k["name"] for k in config.get("metrics", {}).get("kpis", [])
-        if k.get("column") and k.get("column") != "DERIVED"
-        and k.get("agg") in ("sum", "nunique", "mean")
+        if (
+            (k.get("column") and k.get("column") != "DERIVED"
+             and k.get("agg") in ("sum", "nunique", "mean"))
+            or
+            (k.get("agg") == "ratio"
+             and k.get("num_col")
+             and k.get("num_col") != "DERIVED")
+        )
     ]
+
+    _logger.info(
+        "analyze_drivers | ref=%s compare=%s timeframe=%s | dims=%s | "
+        "kpis_to_decompose=%s | curr_df=%d rows | prior_df=%d rows",
+        reference_date, compare_to, timeframe, dims,
+        kpis_to_decompose, len(curr_df), len(prior_df),
+    )
 
     results: Dict[str, List[DriverItem]] = {}
 
@@ -182,7 +210,11 @@ def analyze_drivers(
                 ranked.append(it)
 
         results[kpi] = ranked
+        _logger.info("  → %s: %d driver items across %d dims",
+                     kpi, len(ranked), len(by_dim))
 
+    _logger.info("analyze_drivers done | %d KPIs decomposed | total driver items: %d",
+                 len(results), sum(len(v) for v in results.values()))
     return results
 
 
