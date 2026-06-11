@@ -4022,20 +4022,39 @@ def step_pick_role():
         _ROW_SIZE = 4
         for row_start in range(0, len(role_items), _ROW_SIZE):
             row_items = role_items[row_start: row_start + _ROW_SIZE]
+
+            # ── Cards rendered as a single flex row so every card in the row
+            #    automatically stretches to the height of the tallest one.
+            #    No hardcoded heights needed — the browser handles it.
+            cards_html = (
+                '<div style="display:flex;gap:10px;align-items:stretch;margin-bottom:6px;">'
+            )
+            for role_key, rd in row_items:
+                is_sel = st.session_state.role_name == role_key
+                border = rd["accent_color"] if is_sel else "#374151"
+                bg     = f"{rd['accent_color']}18" if is_sel else "transparent"
+                kpis_display = "  ·  ".join(
+                    (_role_kpi_map.get(role_key) or _flat_kpis)[:3]
+                )
+                cards_html += (
+                    f'<div style="flex:1;border:2px solid {border};background:{bg};'
+                    f'border-radius:10px;padding:14px 16px;">'
+                    f'<div style="font-weight:700;font-size:13px;margin-bottom:3px">'
+                    f'{role_key}</div>'
+                    f'<div style="font-size:11px;color:#9CA3AF;margin-bottom:6px">'
+                    f'{rd["title"]}</div>'
+                    f'<div style="font-size:10px;color:{rd["accent_color"]}">'
+                    f'{kpis_display}</div>'
+                    f'</div>'
+                )
+            cards_html += '</div>'
+            st.markdown(cards_html, unsafe_allow_html=True)
+
+            # ── Buttons rendered in matching st.columns so they sit directly
+            #    under each card and retain normal Streamlit interactivity.
             cols = st.columns(len(row_items))
             for col, (role_key, rd) in zip(cols, row_items):
-                is_sel  = st.session_state.role_name == role_key
-                border  = rd["accent_color"] if is_sel else "#374151"
-                bg      = f"{rd['accent_color']}18" if is_sel else "transparent"
-                col.markdown(
-                    f'<div style="border:2px solid {border};background:{bg};border-radius:10px;'
-                    f'padding:14px 16px;margin-bottom:10px;min-height:88px">'
-                    f'<div style="font-weight:700;font-size:13px;margin-bottom:3px">{role_key}</div>'
-                    f'<div style="font-size:11px;color:#9CA3AF;margin-bottom:6px">{rd["title"]}</div>'
-                    f'<div style="font-size:10px;color:{rd["accent_color"]}">'
-                    f'{"  ·  ".join((_role_kpi_map.get(role_key) or _flat_kpis)[:3])}</div></div>',
-                    unsafe_allow_html=True,
-                )
+                is_sel = st.session_state.role_name == role_key
                 if col.button("✓ Selected" if is_sel else "Select",
                               key=f"role_{role_key}", use_container_width=True,
                               type="primary" if is_sel else "secondary"):
