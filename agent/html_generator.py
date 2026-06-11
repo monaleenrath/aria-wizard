@@ -1,27 +1,26 @@
 """
-html_generator.py
------------------
-Generates ARIA briefing cards as self-contained HTML strings.
+html_generator.py  —  ARIA Briefing Cards  (v3: 3-template redesign)
+──────────────────────────────────────────────────────────────────────
+3 Templates:
+  1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
+                   highlights in narrative paragraphs, one dimension bar chart.
+                   No filters.  Tone differs by role tier.
+  2. scorecard   — KPI grid.  Every role-specific KPI gets its own tile with
+                   a sparkline, MOM/YOY deltas and target indicator.
+                   Up to 4 "View by" dimension dropdowns that switch the
+                   breakdown chart below the grid.
+  3. dossier     — Full analytics deep-dive.  5 mini KPI boxes + 2×2 chart
+                   grid (line trend | dimension bar | contribution donut |
+                   period waterfall).  Up to 4 dimension filters.
 
-5 Templates:
-  1. editorial      — Three-Act: KPIs + sparkline | drivers | action
-  2. scorecard      — KPI grid tiles + donut chart
-  3. story_arc      — Narrative-first + treemap
-  4. ops_dashboard  — Traffic-light tiles + heatmap + movers
-  5. board_pack     — Formal board slide
+All templates:
+  • ARIA | <Company Logo> in top-left masthead
+  • Role-tier tone: C-Suite / Leadership / Management (set by narrative_generator)
+  • MOM, YOY, WOW + Target Δ surfaced per template
+  • Dimension breakdown driven by driver data (no raw df required)
 
-Charts via Chart.js (CDN):
-  - Line / sparkline
-  - Donut / pie
-  - Horizontal bar (drivers)
-  - Radar
-  - Mixed (bar + line for vs-target)
-
-PNG conversion via Playwright (headless Chromium).
-
-Both the wizard preview (st.components.v1.html) and the agent
-(Playwright → PNG → Slack) call generate_html_card() with the
-same payload — guaranteed content parity.
+Charts via Chart.js 4.x CDN.
+PNG conversion via Selenium headless Chrome (html_to_png).
 """
 
 from __future__ import annotations
@@ -32,14 +31,14 @@ import logging
 import re
 from datetime import date
 from typing import Optional
+from collections import defaultdict
 
 log = logging.getLogger(__name__)
 
-# ── CDN scripts (loaded inside each card) ────────────────────────────────── #
+# ─── CDN ─────────────────────────────────────────────────────────────────── #
 _CHARTJS = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
-_D3      = "https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"
 
-# ── Style palettes ────────────────────────────────────────────────────────── #
+# ─── Palettes ─────────────────────────────────────────────────────────────── #
 PALETTES = {
     "dark": {
         "bg": "#0B1220", "surface": "#111827", "surface2": "#1F2937",
@@ -66,12 +65,24 @@ PALETTES = {
 _DEFAULT_ROLE = {
     "title": "Leadership", "badge": "ARIA  ·  EXECUTIVE BRIEFING",
     "primary_kpi": None, "kpis": [], "accent_color": "#F59E0B",
-    "driver_focus": [], "card_template": "editorial", "card_style": "dark",
+    "card_template": "editorial", "card_style": "dark",
+    "company_name": "",
+}
+
+# ─── Domain icons (SVG snippets, 48×48 viewbox) ───────────────────────────── #
+_ICONS = {
+    "aviation": '<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 24L42 8L30 28L42 40L6 24Z" fill="ACCENT" opacity="0.9"/><path d="M30 28L24 36L20 30" fill="ACCENT" opacity="0.5"/></svg>',
+    "retail":   '<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="18" width="32" height="22" rx="2" fill="ACCENT" opacity="0.15" stroke="ACCENT" stroke-width="2"/><path d="M16 18V14a8 8 0 1116 0v4" stroke="ACCENT" stroke-width="2" stroke-linecap="round"/><circle cx="18" cy="30" r="2" fill="ACCENT"/><circle cx="30" cy="30" r="2" fill="ACCENT"/></svg>',
+    "hr":       '<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="16" r="8" fill="ACCENT" opacity="0.2" stroke="ACCENT" stroke-width="2"/><path d="M8 40c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke="ACCENT" stroke-width="2" stroke-linecap="round"/><path d="M30 26l4 4-4 4" stroke="ACCENT" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    "media":    '<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="6" y="10" width="36" height="24" rx="3" fill="ACCENT" opacity="0.15" stroke="ACCENT" stroke-width="2"/><polygon points="20,16 20,28 32,22" fill="ACCENT"/><line x1="16" y1="38" x2="32" y2="38" stroke="ACCENT" stroke-width="2" stroke-linecap="round"/></svg>',
+    "finance":  '<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 36L18 24l8 6 14-16" stroke="ACCENT" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="40" cy="12" r="4" fill="ACCENT" opacity="0.3" stroke="ACCENT" stroke-width="1.5"/></svg>',
+    "qsr":      '<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 20h28M10 26h28" stroke="ACCENT" stroke-width="3" stroke-linecap="round"/><rect x="8" y="30" width="32" height="8" rx="2" fill="ACCENT" opacity="0.2" stroke="ACCENT" stroke-width="1.5"/><path d="M16 20V14a8 4 0 0116 0v6" stroke="ACCENT" stroke-width="1.5"/></svg>',
+    "analytics": '<svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="28" width="8" height="12" rx="1" fill="ACCENT" opacity="0.5"/><rect x="20" y="20" width="8" height="20" rx="1" fill="ACCENT" opacity="0.75"/><rect x="32" y="12" width="8" height="28" rx="1" fill="ACCENT"/><path d="M8 8l32 0" stroke="ACCENT" stroke-width="1" opacity="0.3"/></svg>',
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
+# PURE HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _e(t) -> str:
@@ -105,6 +116,28 @@ def _fmt_pct(val: Optional[float]) -> tuple[str, str]:
     color = "#34D399" if val >= 0 else "#F87171"
     return f"{sign} {abs(val * 100):.1f}%", color
 
+def _fmt_delta_short(val: Optional[float]) -> str:
+    """Format a raw numeric delta (not pct) as short label."""
+    if val is None:
+        return "—"
+    av = abs(val)
+    s  = "+" if val >= 0 else "−"
+    if av >= 1_000_000:
+        return f"{s}${av/1_000_000:.1f}M"
+    if av >= 1_000:
+        return f"{s}${av/1_000:.0f}K"
+    return f"{s}{av:.1f}"
+
+def _rag_color(mom_pct, yoy_pct) -> str:
+    v = yoy_pct if yoy_pct is not None else mom_pct
+    if v is None: return "#94A3B8"
+    if v >= 0.05: return "#34D399"
+    if v >= 0:    return "#FBBF24"
+    return "#F87171"
+
+
+# ── KPI resolution ────────────────────────────────────────────────────────── #
+
 def _resolve_kpis(payload: dict, role: dict):
     kpis = payload.get("kpis", {})
     prim = role.get("primary_kpi")
@@ -120,20 +153,460 @@ def _resolve_kpis(payload: dict, role: dict):
     return prim, kpis, all_drivers
 
 
-def _kpi_donut_fallback(kpis: dict, role_kpis: list) -> tuple[list, list]:
-    """Build contribution-mix donut from KPI current values when driver data is absent.
+# ── Role tier ─────────────────────────────────────────────────────────────── #
 
-    KPI dicts use key 'value' (raw float) and 'value_fmt' (formatted string).
-    Only include KPIs whose value is a meaningful positive number to avoid
-    zero-filled donuts that Chart.js renders as invisible.
+_C_SUITE_KW    = {"ceo","cfo","coo","cmo","cto","chro","chief"}
+_LEADERSHIP_KW = {"vp","vice","director","head","president"}
+
+def _role_tier(role: dict) -> str:
+    """Returns 'c_suite', 'leadership', or 'management'."""
+    tid = (role.get("tier") or role.get("title") or "").lower()
+    if any(k in tid for k in _C_SUITE_KW):    return "c_suite"
+    if any(k in tid for k in _LEADERSHIP_KW): return "leadership"
+    return "management"
+
+
+# ── Company logo ──────────────────────────────────────────────────────────── #
+
+def _company_logo_html(company_name: str, height: int = 26) -> str:
+    """<img> via Clearbit with Google-favicon fallback → text fallback."""
+    if not company_name:
+        return ""
+    slug   = re.sub(r"\s+", "", company_name.lower())
+    domain = f"{slug}.com"
+    cb_url = f"https://logo.clearbit.com/{domain}"
+    gf_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
+    name_e = _e(company_name)
+    return (
+        f'<img src="{cb_url}" '
+        f'onerror="this.onerror=null;this.src=\'{gf_url}\';" '
+        f'style="height:{height}px;width:auto;object-fit:contain;'
+        f'vertical-align:middle;border-radius:3px;margin-left:8px;opacity:0.9;" '
+        f'alt="{name_e}" title="{name_e}">'
+    )
+
+
+# ── Domain icon ───────────────────────────────────────────────────────────── #
+
+def _domain_icon_svg(role: dict, accent: str, size: int = 56) -> str:
+    company = (role.get("company_name") or "").lower()
+    badge   = (role.get("badge") or "").lower()
+    title   = (role.get("title") or "").lower()
+
+    if any(k in company for k in ("lufthansa","air","aviat","fly")):
+        key = "aviation"
+    elif any(k in company for k in ("sobey","grocery","walmart","superstore","retail","store")):
+        key = "retail"
+    elif any(k in company for k in ("hr","people","talent","human resource")):
+        key = "hr"
+    elif any(k in company for k in ("netflix","stream","media","entertain","disney")):
+        key = "media"
+    elif any(k in title+badge for k in ("cfo","finance","financial","treasury")):
+        key = "finance"
+    elif any(k in company for k in ("burger","mcdonald","kfc","pizza","qsr","restaur","food")):
+        key = "qsr"
+    else:
+        key = "analytics"
+
+    svg = _ICONS.get(key, _ICONS["analytics"]).replace("ACCENT", accent)
+    return (
+        f'<div style="width:{size}px;height:{size}px;flex-shrink:0;'
+        f'display:flex;align-items:center;justify-content:center">'
+        f'{svg}'
+        f'</div>'
+    )
+
+
+# ── Driver grouping for dimension charts ──────────────────────────────────── #
+
+def _dim_groups(all_drivers: list, max_dims: int = 4, max_members: int = 8) -> dict:
     """
-    selected = [k for k in role_kpis if k in kpis][:6] or list(kpis.keys())[:6]
+    Returns {dimension: {labels:[...], values:[...]}} from driver list.
+    Used for dimension filter dropdowns and bar charts.
+    """
+    raw: dict[str, dict] = defaultdict(dict)
+    for d in all_drivers:
+        dim    = d.get("dimension", "")
+        member = d.get("member", "")
+        val    = d.get("value") or abs(d.get("delta", 0))
+        if dim and member and val:
+            raw[dim][member] = max(raw[dim].get(member, 0), val)
+
+    result = {}
+    for dim in list(raw.keys())[:max_dims]:
+        items  = sorted(raw[dim].items(), key=lambda x: x[1], reverse=True)[:max_members]
+        if items:
+            labels, values = zip(*items)
+            result[dim] = {"labels": list(labels), "values": [round(v, 2) for v in values]}
+    return result
+
+
+# ── Waterfall data ────────────────────────────────────────────────────────── #
+
+def _waterfall_data(kpis: dict, prim: str, all_drivers: list):
+    """
+    Build floating-bar waterfall: [Prior Period → lifts/drags → Current].
+    Returns (labels, floats [[start,end]], colors, is_reference).
+    """
+    pk      = kpis.get(prim, {})
+    current = pk.get("value", 0) or 0
+    mom_pct = pk.get("mom_pct") or 0
+    prior   = current / (1 + mom_pct) if (1 + mom_pct) != 0 else current
+
+    lifts = sorted([d for d in all_drivers if d.get("delta",0)>0],
+                   key=lambda x: x["delta"], reverse=True)[:2]
+    drags = sorted([d for d in all_drivers if d.get("delta",0)<0],
+                   key=lambda x: x["delta"])[:2]
+
+    labels   = []
+    floats   = []
+    colors   = []
+    is_ref   = []
+
+    labels.append("Prior"); floats.append([0, round(prior, 2)]); colors.append("#60A5FA"); is_ref.append(True)
+    cum = prior
+    for d in lifts + drags:
+        delta  = d.get("delta", 0)
+        member = str(d.get("member","?"))[:12]
+        labels.append(member)
+        floats.append([round(cum, 2), round(cum + delta, 2)])
+        colors.append("#34D399" if delta >= 0 else "#F87171")
+        is_ref.append(False)
+        cum += delta
+    labels.append("Current"); floats.append([0, round(current, 2)]); colors.append("#60A5FA"); is_ref.append(True)
+
+    return labels, floats, colors, is_ref
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BASE CSS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _base_css(pal: dict, accent: str) -> str:
+    is_light = pal["bg"] in ("#F5F0E8","#FFFFFF","#E8ECF4","#EDE8DF")
+    input_bg  = pal["surface2"] if not is_light else "#FFFFFF"
+    input_col = pal["text"]
+    return f"""
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+html {{ background:{pal['bg']}; }}
+body {{
+    background:{pal['bg']}; color:{pal['text']};
+    font-family:-apple-system,BlinkMacSystemFont,'Inter',Arial,sans-serif;
+    font-size:13px; line-height:1.5;
+}}
+.card {{
+    width:100%; max-width:900px; background:{pal['bg']};
+    margin:0 auto; display:flex; flex-direction:column;
+    padding:20px 28px 0;
+}}
+/* ─ Masthead ──────────────────────────────── */
+.mast {{
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid {pal['border']}; padding-bottom:10px; margin-bottom:14px;
+    gap:8px; flex-wrap:wrap;
+}}
+.mast-left  {{ display:flex; align-items:center; gap:0; flex-shrink:0; }}
+.mast-mid   {{ flex:1; text-align:center; color:{pal['muted']}; font-size:8px;
+               letter-spacing:3px; font-weight:600; }}
+.mast-right {{ display:flex; align-items:center; gap:8px; flex-shrink:0; }}
+.aria-logo  {{ color:{accent}; font-size:11px; font-weight:800; letter-spacing:4px; }}
+.date-lbl   {{ color:{pal['muted']}; font-size:9px; letter-spacing:2px; font-weight:600; }}
+.date-range {{ color:{pal['muted']}; font-size:8px; opacity:0.7; }}
+
+/* ─ Section labels ────────────────────────── */
+.sec {{ font-size:8px; font-weight:700; letter-spacing:3px;
+        color:{accent}; text-transform:uppercase; margin-bottom:7px; }}
+
+/* ─ KPI tiles ────────────────────────────── */
+.kpi-grid  {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }}
+.kpi-tile  {{ flex:1 1 150px; min-width:130px; max-width:220px;
+              background:{pal['surface']}; border:1px solid {pal['border']};
+              border-radius:8px; padding:10px 12px; position:relative;
+              overflow:hidden; }}
+.kpi-rag   {{ position:absolute; top:9px; right:9px; width:8px; height:8px;
+              border-radius:50%; }}
+.kpi-name  {{ font-size:8px; font-weight:700; letter-spacing:1.5px;
+              color:{pal['muted']}; text-transform:uppercase; margin-bottom:5px; }}
+.kpi-val   {{ font-size:20px; font-weight:700; color:{pal['text']};
+              font-family:Georgia,serif; line-height:1.1; margin-bottom:3px; }}
+.kpi-val.sm{{ font-size:15px; }}
+.kpi-d     {{ font-size:9px; font-weight:600; }}
+.kpi-spark {{ height:32px; margin:4px 0 2px; }}
+
+/* ─ Mini KPI row (Dossier top) ───────────── */
+.mkpi-row  {{ display:flex; gap:8px; margin-bottom:14px; }}
+.mkpi      {{ flex:1; background:{pal['surface']}; border:1px solid {pal['border']};
+              border-radius:6px; padding:8px 10px; min-width:0; }}
+.mkpi-name {{ font-size:7px; font-weight:700; letter-spacing:1.5px;
+              color:{pal['muted']}; text-transform:uppercase; margin-bottom:3px; }}
+.mkpi-val  {{ font-size:14px; font-weight:700; color:{pal['text']};
+              font-family:Georgia,serif; white-space:nowrap;
+              overflow:hidden; text-overflow:ellipsis; }}
+.mkpi-d    {{ font-size:8px; font-weight:600; }}
+
+/* ─ Charts ───────────────────────────────── */
+.chart-box {{ position:relative; }}
+canvas     {{ display:block; }}
+
+/* ─ Narrative ────────────────────────────── */
+.narr {{ font-size:11px; color:{pal['subtext']}; line-height:1.6; }}
+.narr strong {{ color:{pal['text']}; }}
+.stat-pill {{
+    display:inline-block; border-radius:4px; padding:1px 7px; margin:1px 2px;
+    font-size:9px; font-weight:700; vertical-align:middle;
+    border:1px solid;
+}}
+
+/* ─ Filter panel ─────────────────────────── */
+.filter-panel {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }}
+.filter-lbl   {{ font-size:7px; font-weight:700; letter-spacing:3px;
+                 color:{pal['muted']}; text-transform:uppercase; }}
+.filter-sel   {{
+    font-size:9px; background:{input_bg}; color:{input_col};
+    border:1px solid {pal['border']}; border-radius:5px;
+    padding:4px 8px; cursor:pointer; outline:none;
+    font-family:inherit;
+}}
+.filter-chip  {{
+    font-size:8px; font-weight:700; letter-spacing:1px;
+    background:{accent}22; border:1px solid {accent}55;
+    color:{accent}; border-radius:12px; padding:2px 9px;
+    display:none;
+}}
+
+/* ─ Action box ───────────────────────────── */
+.action-box  {{ background:{accent}15; border:1px solid {accent}40;
+                border-radius:8px; padding:12px 14px; }}
+.action-lbl  {{ font-size:7px; font-weight:700; letter-spacing:4px;
+                color:{accent}; margin-bottom:6px; }}
+.action-text {{ font-size:11px; font-weight:700; color:{pal['text']};
+                line-height:1.4; margin-bottom:4px; }}
+.action-meta {{ font-size:9px; color:{pal['muted']}; }}
+
+/* ─ Footer ───────────────────────────────── */
+.footer      {{ background:{pal['footer_bg']}; margin:14px -28px 0;
+                padding:10px 28px; border-top:1px solid {pal['border']}; }}
+.footer-lbl  {{ font-size:7px; font-weight:700; letter-spacing:4px;
+                color:{accent}; margin-bottom:4px; }}
+.footer-text {{ font-size:9px; color:{pal['subtext']}; font-style:italic;
+                font-family:Georgia,serif; opacity:0.85; }}
+
+/* ─ Editorial specific ───────────────────── */
+.ed-hero     {{ display:flex; align-items:center; gap:18px;
+                padding:14px 0 12px; border-bottom:1px solid {pal['border']};
+                margin-bottom:14px; }}
+.ed-headline {{ font-size:20px; font-weight:700; color:{pal['text']};
+                font-family:Georgia,serif; line-height:1.25;
+                flex:1; }}
+.ed-sub      {{ font-size:11px; color:{pal['muted']}; font-style:italic;
+                margin-top:5px; }}
+.ed-col      {{ flex:1; }}
+.ed-col + .ed-col {{ border-left:1px solid {pal['border']}; padding-left:16px; }}
+.ed-col + .ed-col + .ed-col {{ border-left:1px solid {pal['border']}; padding-left:16px; }}
+.ed-cols     {{ display:flex; gap:0; }}
+.ed-body     {{ font-size:11px; color:{pal['subtext']}; line-height:1.65;
+                font-family:Georgia,serif; }}
+.ed-stat-row {{ display:flex; flex-wrap:wrap; gap:5px; margin:10px 0 6px; }}
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHART SCRIPTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+_PALETTE8 = ["#F59E0B","#34D399","#60A5FA","#F87171","#A78BFA",
+              "#FBBF24","#F97316","#14B8A6"]
+
+def _palette(accent: str, n: int) -> list:
+    p = [accent] + [c for c in _PALETTE8 if c != accent]
+    return (p * 4)[:n]
+
+
+def _chart_sparkline(cid: str, values: list, accent: str) -> str:
+    vj = json.dumps([round(v, 2) for v in values])
+    lj = json.dumps([str(i) for i in range(len(values))])
+    return f"""
+    new Chart(document.getElementById('{cid}'), {{
+        type:'line',
+        data:{{ labels:{lj}, datasets:[{{ data:{vj},
+            borderColor:'{accent}', borderWidth:1.5, pointRadius:0,
+            fill:true, backgroundColor:'{accent}18', tension:0.4 }}] }},
+        options:{{ responsive:true, maintainAspectRatio:false,
+            plugins:{{ legend:{{display:false}}, tooltip:{{enabled:false}} }},
+            scales:{{ x:{{display:false}}, y:{{display:false}} }},
+            animation:{{duration:0}} }}
+    }});"""
+
+
+def _chart_donut(cid: str, labels: list, values: list, accent: str) -> str:
+    colors = _palette(accent, len(values))
+    lj = json.dumps(labels); vj = json.dumps(values); cj = json.dumps(colors)
+    return f"""
+    new Chart(document.getElementById('{cid}'), {{
+        type:'doughnut',
+        data:{{ labels:{lj}, datasets:[{{ data:{vj},
+            backgroundColor:{cj}, borderWidth:2, borderColor:'transparent',
+            hoverOffset:4 }}] }},
+        options:{{ cutout:'62%', responsive:true, maintainAspectRatio:false,
+            plugins:{{ legend:{{display:false}},
+                tooltip:{{ callbacks:{{ label: ctx => ' '+ctx.label+': '+
+                    (ctx.raw>=1e6?'$'+(ctx.raw/1e6).toFixed(1)+'M':
+                     ctx.raw>=1e3?'$'+(ctx.raw/1e3).toFixed(1)+'K':
+                     ctx.raw.toFixed(0)) }} }} }},
+            animation:{{duration:0}} }}
+    }});"""
+
+
+def _chart_bar_h(cid: str, labels: list, values: list, accent: str, pal: dict) -> str:
+    """Horizontal bar (driver breakdown / dimension)."""
+    colors = ["#34D399" if v >= 0 else "#F87171" for v in values]
+    lj = json.dumps(labels); vj = json.dumps(values); cj = json.dumps(colors)
+    tc = pal["muted"]
+    return f"""
+    new Chart(document.getElementById('{cid}'), {{
+        type:'bar',
+        data:{{ labels:{lj}, datasets:[{{ data:{vj},
+            backgroundColor:{cj}, borderRadius:3, borderWidth:0 }}] }},
+        options:{{ indexAxis:'y', responsive:true, maintainAspectRatio:false,
+            plugins:{{ legend:{{display:false}},
+                tooltip:{{ callbacks:{{ label: ctx =>
+                    (Math.abs(ctx.raw)>=1e6
+                     ? (ctx.raw>=0?'+':'')+( ctx.raw/1e6).toFixed(1)+'M'
+                     : Math.abs(ctx.raw)>=1e3
+                     ? (ctx.raw>=0?'+':'')+(ctx.raw/1e3).toFixed(1)+'K'
+                     : ctx.raw.toFixed(0)) }} }} }},
+            scales:{{
+                x:{{ display:false, grid:{{display:false}} }},
+                y:{{ ticks:{{ color:'{tc}', font:{{size:9}} }},
+                     grid:{{display:false}}, border:{{display:false}} }}
+            }},
+            animation:{{duration:0}} }}
+    }});"""
+
+
+def _chart_bar_v(cid: str, labels: list, values: list, accent: str, pal: dict) -> str:
+    """Vertical bar — dimension breakdown (filterable)."""
+    colors = _palette(accent, len(values))
+    lj = json.dumps(labels); vj = json.dumps(values); cj = json.dumps(colors)
+    tc = pal["muted"]
+    return f"""
+    (function(){{
+        var ctx = document.getElementById('{cid}');
+        if(!ctx) return;
+        ARIA_CHARTS['{cid}'] = new Chart(ctx, {{
+            type:'bar',
+            data:{{ labels:{lj}, datasets:[{{ data:{vj},
+                backgroundColor:{cj}, borderRadius:4, borderWidth:0 }}] }},
+            options:{{ responsive:true, maintainAspectRatio:false,
+                plugins:{{ legend:{{display:false}},
+                    tooltip:{{ callbacks:{{ label: ctx =>
+                        (ctx.raw>=1e6?'$'+(ctx.raw/1e6).toFixed(1)+'M':
+                         ctx.raw>=1e3?'$'+(ctx.raw/1e3).toFixed(1)+'K':
+                         ctx.raw.toFixed(1)) }} }} }},
+                scales:{{
+                    x:{{ ticks:{{ color:'{tc}', font:{{size:9}}, maxRotation:30 }},
+                         grid:{{display:false}}, border:{{display:false}} }},
+                    y:{{ ticks:{{ color:'{tc}', font:{{size:8}} }},
+                         grid:{{ color:'{pal["border"]}' }}, border:{{display:false}} }}
+                }},
+                animation:{{duration:300}} }}
+        }});
+    }})();"""
+
+
+def _chart_line_trend(cid: str, values: list, accent: str, pal: dict,
+                       labels: Optional[list] = None) -> str:
+    """Line chart for primary KPI trend (Dossier top-left)."""
+    if labels is None:
+        labels = [str(i) for i in range(len(values))]
+    vj = json.dumps([round(v, 2) for v in values])
+    lj = json.dumps(labels)
+    tc = pal["muted"]
+    return f"""
+    (function(){{
+        var ctx = document.getElementById('{cid}');
+        if(!ctx) return;
+        ARIA_CHARTS['{cid}'] = new Chart(ctx, {{
+            type:'line',
+            data:{{ labels:{lj}, datasets:[{{
+                data:{vj}, borderColor:'{accent}', borderWidth:2,
+                pointRadius:0, fill:true,
+                backgroundColor:'{accent}22', tension:0.35
+            }}] }},
+            options:{{ responsive:true, maintainAspectRatio:false,
+                plugins:{{ legend:{{display:false}} }},
+                scales:{{
+                    x:{{ ticks:{{ color:'{tc}', font:{{size:8}}, maxTicksLimit:6 }},
+                         grid:{{display:false}}, border:{{display:false}} }},
+                    y:{{ ticks:{{ color:'{tc}', font:{{size:8}} }},
+                         grid:{{ color:'{pal["border"]}' }}, border:{{display:false}} }}
+                }},
+                animation:{{duration:0}} }}
+        }});
+    }})();"""
+
+
+def _chart_waterfall(cid: str, labels: list, floats: list,
+                      colors: list, pal: dict) -> str:
+    """Floating-bar waterfall chart (period-over-period)."""
+    lj = json.dumps(labels)
+    fj = json.dumps(floats)
+    cj = json.dumps(colors)
+    tc = pal["muted"]
+    return f"""
+    (function(){{
+        var ctx = document.getElementById('{cid}');
+        if(!ctx) return;
+        new Chart(ctx, {{
+            type:'bar',
+            data:{{ labels:{lj}, datasets:[{{
+                data:{fj},
+                backgroundColor:{cj},
+                borderRadius:3, borderWidth:0
+            }}] }},
+            options:{{ responsive:true, maintainAspectRatio:false,
+                plugins:{{ legend:{{display:false}},
+                    tooltip:{{ callbacks:{{
+                        label: ctx => {{
+                            var a=ctx.raw, v=Array.isArray(a)?a[1]-a[0]:a;
+                            return (v>=0?'+':'')+
+                                (Math.abs(v)>=1e6?(v/1e6).toFixed(1)+'M':
+                                 Math.abs(v)>=1e3?(v/1e3).toFixed(0)+'K':
+                                 v.toFixed(0));
+                        }}
+                    }} }} }},
+                scales:{{
+                    x:{{ ticks:{{ color:'{tc}', font:{{size:9}} }},
+                         grid:{{display:false}}, border:{{display:false}} }},
+                    y:{{ ticks:{{ color:'{tc}', font:{{size:8}} }},
+                         grid:{{ color:'{pal["border"]}' }}, border:{{display:false}} }}
+                }},
+                animation:{{duration:0}} }}
+        }});
+    }})();"""
+
+
+# ── KPI donut fallback ────────────────────────────────────────────────────── #
+
+def _donut_data_from_drivers(all_drivers: list, top_n: int = 5):
+    items = sorted([d for d in all_drivers if d.get("delta",0)>0],
+                   key=lambda x: x["delta"], reverse=True)[:top_n]
+    if not items:
+        items = sorted(all_drivers, key=lambda x: abs(x.get("delta",0)),
+                       reverse=True)[:top_n]
+    labels = [str(d.get("member","?"))[:18] for d in items]
+    values = [abs(d.get("delta",0)) for d in items]
+    return labels, values
+
+
+def _donut_from_kpis(kpis: dict, show_kpis: list):
+    selected = [k for k in show_kpis if k in kpis][:6] or list(kpis.keys())[:6]
     pairs = []
     for k in selected:
-        kd = kpis[k]
+        kd  = kpis[k]
         raw = kd.get("value", kd.get("value_fmt", 0)) or 0
         try:
-            v = abs(float(str(raw).replace(",", "").replace("$", "").replace("%", "").strip()))
+            v = abs(float(str(raw).replace(",","").replace("$","").replace("%","").strip()))
         except (ValueError, TypeError):
             v = 0.0
         if v > 0:
@@ -143,821 +616,534 @@ def _kpi_donut_fallback(kpis: dict, role_kpis: list) -> tuple[list, list]:
     labels, values = zip(*pairs)
     return list(labels), list(values)
 
-def _rag_color(mom_pct, yoy_pct) -> str:
-    v = yoy_pct if yoy_pct is not None else mom_pct
-    if v is None: return "#94A3B8"
-    if v >= 0.05: return "#34D399"
-    if v >= 0:    return "#FBBF24"
-    return "#F87171"
 
-def _driver_chart_data(all_drivers: list, top_n: int = 6) -> tuple[list, list, list]:
-    """Return (labels, values, colors) for top movers bar chart."""
-    lifts = sorted([d for d in all_drivers if d.get("delta", 0) > 0],
-                   key=lambda d: d["delta"], reverse=True)[:top_n//2+1]
-    drags = sorted([d for d in all_drivers if d.get("delta", 0) < 0],
-                   key=lambda d: d["delta"])[:top_n//2]
-    items  = lifts + drags
-    labels = [f"{d.get('dimension','')} · {d.get('member','')}"[:28] for d in items]
-    values = [d.get("delta", 0) for d in items]
-    colors = ["#34D399" if v >= 0 else "#F87171" for v in values]
-    return labels, values, colors
+# ══════════════════════════════════════════════════════════════════════════════
+# SHARED BLOCKS
+# ══════════════════════════════════════════════════════════════════════════════
 
-def _donut_data(all_drivers: list, top_n: int = 5) -> tuple[list, list]:
-    items = sorted([d for d in all_drivers if d.get("delta", 0) > 0],
-                   key=lambda d: d["delta"], reverse=True)[:top_n]
-    if not items:
-        items = sorted(all_drivers, key=lambda d: abs(d.get("delta", 0)),
-                       reverse=True)[:top_n]
-    labels = [f"{d.get('member','?')}"[:18] for d in items]
-    values = [abs(d.get("delta", 0)) for d in items]
-    return labels, values
+def _masthead(payload: dict, role: dict, pal: dict, accent: str,
+              filter_html: str = "") -> str:
+    badge     = _e(role.get("badge","ARIA · BRIEFING"))
+    ref_date  = _fmt_date(payload.get("reference_date",""))
+    ws        = payload.get("window_start","")
+    tf        = payload.get("timeframe","1d")
+    company   = role.get("company_name","")
+    range_lbl = ""
+    if tf != "1d" and ws and ws != payload.get("reference_date",""):
+        range_lbl = (f'<span class="date-range"> &nbsp;'
+                     f'{_e(_fmt_date_short(ws))} → {_e(_fmt_date_short(payload.get("reference_date","")))} '
+                     f'</span>')
+
+    logo_html = _company_logo_html(company)
+
+    return f"""
+<div class="mast">
+  <div class="mast-left">
+    <span class="aria-logo">ARIA</span>{logo_html}
+  </div>
+  <div class="mast-mid">{badge}</div>
+  <div class="mast-right">
+    {filter_html}
+    <div>
+      <div class="date-lbl">{ref_date}</div>
+      {range_lbl}
+    </div>
+  </div>
+</div>"""
+
+
+def _footer(narrative, accent: str, pal: dict) -> str:
+    notes = _strip_md(getattr(narrative,"speaker_notes","") or "")
+    notes = _e(notes[:200] + ("…" if len(notes)>200 else ""))
+    return f"""
+<div class="footer">
+  <div class="footer-lbl">Speaker Notes · What the Board Will Ask</div>
+  <div class="footer-text">{notes}</div>
+</div>"""
+
+
+def _action_box(narrative, role: dict, pal: dict, accent: str) -> str:
+    act   = _strip_md(getattr(narrative,"recommended_action","") or "")
+    act   = _e(act[:200])
+    owner = _e(role.get("title","Team"))
+    return f"""
+<div class="action-box">
+  <div class="action-lbl">Recommended Action</div>
+  <div class="action-text">{act}</div>
+  <div class="action-meta">Owner: {owner} · By EOW</div>
+</div>"""
+
+
+def _filter_panel(dim_groups: dict) -> str:
+    """Dropdown selects for up to 4 dimensions."""
+    if not dim_groups:
+        return ""
+    sels = ""
+    dims = list(dim_groups.keys())[:4]
+    for dim in dims:
+        members = dim_groups[dim]["labels"]
+        opts    = f'<option value="All">{_e(dim)}: All</option>'
+        for m in members:
+            opts += f'<option value="{_e(m)}">{_e(m)}</option>'
+        sels += f'<select class="filter-sel" data-dim="{_e(dim)}" onchange="ariaFilter(this)">{opts}</select> '
+    return f'<div class="filter-panel"><span class="filter-lbl">View by</span> {sels}</div>'
+
+
+def _narrative_section(narrative, pal: dict, accent: str,
+                        kpis: dict, role_kpis: list, tier: str) -> str:
+    """3-panel narrative: What's Happening | Key Drivers | Action."""
+    summary = _strip_md(getattr(narrative,"exec_summary","") or "")
+    drivers = _strip_md(getattr(narrative,"drivers_md","") or "")
+    action  = _strip_md(getattr(narrative,"recommended_action","") or "")
+
+    # Tone label by tier
+    tone_labels = {
+        "c_suite":    ("Strategic Overview","Boardroom Signals","Executive Directive"),
+        "leadership": ("Performance Review","Root-Cause Drivers","Leadership Priority"),
+        "management": ("Operational Status","What Moved the Number","Team Action"),
+    }
+    wh_lbl, dr_lbl, ac_lbl = tone_labels.get(tier, tone_labels["leadership"])
+
+    # Inline stat pills for "What's Happening"
+    pills = ""
+    for kn in [k for k in role_kpis if k in kpis][:4]:
+        kd = kpis[kn]; ms, mc = _fmt_pct(kd.get("mom_pct")); ys, yc = _fmt_pct(kd.get("yoy_pct"))
+        if ms != "—":
+            pills += (f'<span class="stat-pill" style="background:{mc}22;border-color:{mc}66;color:{mc}">'
+                      f'{_e(kn)}: {_e(ms)} MoM</span>')
+        if ys != "—":
+            pills += (f'<span class="stat-pill" style="background:{yc}22;border-color:{yc}66;color:{yc}">'
+                      f'YoY {_e(ys)}</span>')
+
+    # Driver bullets (from drivers_md or parsed list)
+    drv_lines = [l.strip().lstrip("•-*123456789. ") for l in drivers.split("\n") if l.strip()][:4]
+    drv_html  = "".join(f'<div style="margin-bottom:5px;font-size:10px;color:{pal["subtext"]};">'
+                         f'<span style="color:{accent};margin-right:4px">▶</span>{_e(l)}</div>'
+                         for l in drv_lines) or f'<div class="narr">{_e(summary[:120])}</div>'
+
+    # Action lines
+    act_lines = [l.strip().lstrip("•-*123456789. ") for l in action.split("\n") if l.strip()][:3]
+    if not act_lines:
+        act_lines = [action[:150]] if action else ["Review performance with team."]
+    act_html  = "".join(f'<div style="margin-bottom:6px;font-size:10px;color:{pal["subtext"]};">'
+                         f'<span style="color:{accent};font-weight:700;margin-right:5px">▶</span>{_e(l)}</div>'
+                         for l in act_lines)
+
+    border = pal["border"]
+    return f"""
+<div style="display:flex;gap:0;margin-top:14px;border-top:1px solid {border};padding-top:14px">
+  <div style="flex:1;padding-right:14px;border-right:1px solid {border}">
+    <div class="sec">{_e(wh_lbl)}</div>
+    <div class="ed-stat-row">{pills}</div>
+    <div class="narr">{_e(summary[:280])}</div>
+  </div>
+  <div style="flex:1;padding:0 14px;border-right:1px solid {border}">
+    <div class="sec">{_e(dr_lbl)}</div>
+    {drv_html}
+  </div>
+  <div style="flex:1;padding-left:14px">
+    <div class="sec">{_e(ac_lbl)}</div>
+    {act_html}
+  </div>
+</div>"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BASE CSS  (shared across all templates)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _base_css(pal: dict, accent: str) -> str:
-    return f"""
-    * {{ margin:0; padding:0; box-sizing:border-box; }}
-    html {{ background:{pal['bg']}; }}
-    body {{
-        background:{pal['bg']}; color:{pal['text']};
-        font-family:-apple-system,BlinkMacSystemFont,'Inter',Arial,sans-serif;
-        font-size:13px; line-height:1.4;
-        overflow-x:hidden;
-    }}
-    .card {{ width:100%; max-width:900px; background:{pal['bg']};
-             margin:0 auto;
-             display:flex; flex-direction:column; padding:20px 28px 0; }}
-
-    /* Masthead */
-    .masthead {{ display:flex; justify-content:space-between; align-items:flex-start;
-                 border-bottom:1px solid {pal['border']}; padding-bottom:10px; margin-bottom:14px; }}
-    .masthead-left .aria-logo {{ color:{accent}; font-size:10px; font-weight:800;
-                                  letter-spacing:4px; }}
-    .masthead-center {{ text-align:center; color:{pal['muted']}; font-size:8px;
-                        letter-spacing:3px; font-weight:600; }}
-    .masthead-right {{ text-align:right; }}
-    .date-main {{ color:{pal['muted']}; font-size:9px; letter-spacing:2px; font-weight:600; }}
-    .date-range {{ color:{pal['muted']}; font-size:8px; opacity:0.7; margin-top:2px; }}
-
-    /* Headline */
-    .headline {{ font-size:17px; font-weight:700; color:{pal['text']};
-                 font-family:Georgia,serif; margin-bottom:6px; line-height:1.3; }}
-    .subheadline {{ font-size:11px; color:{pal['muted']}; font-style:italic;
-                    margin-bottom:12px; }}
-    .accent-rule {{ width:44px; height:2px; background:{accent}; margin:8px 0 14px; }}
-
-    /* KPI tiles */
-    .kpi-grid {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; }}
-    .kpi-tile {{ flex:1 1 160px; background:{pal['surface']}; border:1px solid {pal['border']};
-                 border-radius:8px; padding:12px 14px; min-width:140px; max-width:240px;
-                 position:relative; }}
-    .kpi-tile.large {{ flex:1 1 220px; }}
-    .kpi-rag {{ position:absolute; top:10px; right:10px; width:9px; height:9px;
-                border-radius:50%; }}
-    .kpi-name {{ font-size:8px; font-weight:700; letter-spacing:1.5px;
-                 color:{pal['muted']}; margin-bottom:6px; text-transform:uppercase; }}
-    .kpi-value {{ font-size:22px; font-weight:700; color:{pal['text']};
-                  font-family:Georgia,serif; margin-bottom:4px; }}
-    .kpi-value.small {{ font-size:17px; }}
-    .kpi-delta {{ font-size:10px; font-weight:600; }}
-
-    /* Section labels */
-    .section-label {{ font-size:8px; font-weight:700; letter-spacing:3px;
-                      color:{accent}; margin-bottom:8px; text-transform:uppercase; }}
-
-    /* Action box */
-    .action-box {{ background:{accent}1A; border:1px solid {accent}40;
-                   border-radius:8px; padding:14px 16px; }}
-    .action-label {{ font-size:7px; font-weight:700; letter-spacing:4px;
-                     color:{accent}; margin-bottom:8px; }}
-    .action-text {{ font-size:12px; font-weight:700; color:{pal['text']};
-                    line-height:1.4; margin-bottom:6px; }}
-    .action-meta {{ font-size:9px; color:{pal['muted']}; }}
-
-    /* Footer / speaker notes */
-    .footer {{ background:{pal['footer_bg']}; margin:14px -28px 0;
-               padding:12px 28px; border-top:1px solid {pal['border']}; }}
-    .footer-label {{ font-size:7px; font-weight:700; letter-spacing:4px;
-                     color:{accent}; margin-bottom:6px; }}
-    .footer-text {{ font-size:10px; color:{pal['subtext']}; font-style:italic;
-                    font-family:Georgia,serif; opacity:0.85; }}
-
-    /* Top movers list */
-    .mover-row {{ display:flex; align-items:center; gap:8px; margin-bottom:6px; }}
-    .mover-bar-wrap {{ flex:1; background:{pal['surface2']}; border-radius:3px; height:12px; }}
-    .mover-bar {{ height:12px; border-radius:3px; min-width:4px; }}
-    .mover-label {{ font-size:9px; font-weight:600; color:{pal['text']}; width:160px;
-                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-    .mover-value {{ font-size:9px; font-weight:700; width:60px; text-align:right; }}
-
-    /* Chart containers */
-    .chart-wrap {{ position:relative; }}
-    canvas {{ display:block; }}
-    """
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SHARED BLOCK RENDERERS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _block_masthead(payload: dict, role: dict, pal: dict, accent: str) -> str:
-    badge    = _e(role.get("badge", "ARIA · BRIEFING"))
-    ref_date = _fmt_date(payload.get("reference_date", ""))
-    ws       = payload.get("window_start", "")
-    tf       = payload.get("timeframe", "1d")
-    range_html = ""
-    if tf != "1d" and ws and ws != payload.get("reference_date", ""):
-        range_html = (f'<div class="date-range">'
-                      f'{_e(_fmt_date_short(ws))} → {_e(_fmt_date_short(payload.get("reference_date","")))} '
-                      f'</div>')
-    return f"""
-    <div class="masthead">
-        <div class="masthead-left"><div class="aria-logo">ARIA</div></div>
-        <div class="masthead-center">{badge}</div>
-        <div class="masthead-right">
-            <div class="date-main">{ref_date}</div>
-            {range_html}
-        </div>
-    </div>"""
-
-
-def _block_headline(narrative, pal: dict) -> str:
-    hl  = _e(_strip_md(getattr(narrative, "headline", "") or ""))
-    sub = _strip_md(getattr(narrative, "exec_summary", "") or "")
-    sub = _e((sub.split(".")[0] + ".") if "." in sub else sub[:120])
-    return f"""
-    <div class="headline">{hl}</div>
-    <div class="subheadline">{sub}</div>
-    <div class="accent-rule"></div>"""
-
-
-def _block_kpi_tiles(kpis: dict, role_kpi_names: list, pal: dict,
-                      accent: str, large: bool = False) -> str:
-    show = [k for k in role_kpi_names if k in kpis] or list(kpis.keys())[:6]
-    tiles = ""
-    for name in show:
-        kd   = kpis[name]
-        val  = _e(kd.get("value_fmt", "—"))
-        ms, mc = _fmt_pct(kd.get("mom_pct"))
-        rag  = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
-        size_cls = "large" if large else ""
-        val_cls  = "small" if len(str(val)) > 8 else ""
-        tiles += f"""
-        <div class="kpi-tile {size_cls}">
-            <div class="kpi-rag" style="background:{rag}"></div>
-            <div class="kpi-name">{_e(name)}</div>
-            <div class="kpi-value {val_cls}">{val}</div>
-            <div class="kpi-delta" style="color:{mc}">{_e(ms)} MoM</div>
-        </div>"""
-    return f'<div class="kpi-grid">{tiles}</div>'
-
-
-def _block_action(narrative, role: dict, pal: dict, accent: str) -> str:
-    act  = _strip_md(getattr(narrative, "recommended_action", "") or "")
-    act  = _e(act[:200])
-    owner = _e(role.get("title", "Team"))
-    return f"""
-    <div class="action-box">
-        <div class="action-label">Recommended Action</div>
-        <div class="action-text">{act}</div>
-        <div class="action-meta">Owner: {owner} · By EOW</div>
-    </div>"""
-
-
-def _block_footer(narrative, accent: str, pal: dict) -> str:
-    notes = _strip_md(getattr(narrative, "speaker_notes", "") or "")
-    notes = _e(notes[:180] + ("…" if len(notes) > 180 else ""))
-    return f"""
-    <div class="footer">
-        <div class="footer-label">Speaker Notes · What the Board Will Ask</div>
-        <div class="footer-text">{notes}</div>
-    </div>"""
-
-
-def _block_top_movers(all_drivers: list, pal: dict, accent: str,
-                       max_rows: int = 5) -> str:
-    lifts = sorted([d for d in all_drivers if d.get("delta", 0) > 0],
-                   key=lambda d: d["delta"], reverse=True)[:max_rows]
-    drags = sorted([d for d in all_drivers if d.get("delta", 0) < 0],
-                   key=lambda d: d["delta"])[:2]
-    all_items = (lifts + drags)[:max_rows]
-    if not all_items:
-        return '<div style="color:#64748B;font-size:10px;padding:8px 0">No driver data available</div>'
-    max_abs = max(abs(d.get("delta", 0)) for d in all_items) or 1
-    rows = ""
-    for d in all_items:
-        delta = d.get("delta", 0)
-        col   = "#34D399" if delta >= 0 else "#F87171"
-        sign  = "+" if delta >= 0 else "−"
-        lbl   = f"{d.get('dimension','')} {d.get('member','')}"[:26]
-        pct   = int(abs(delta) / max_abs * 100)
-        # format delta
-        av = abs(delta)
-        if av >= 1_000_000: dfmt = f"${delta/1_000_000:.1f}M"
-        elif av >= 1_000:   dfmt = f"${delta/1_000:.1f}K"
-        else:               dfmt = f"${delta:,.0f}"
-        rows += f"""
-        <div class="mover-row">
-            <div class="mover-label">{_e(lbl)}</div>
-            <div class="mover-bar-wrap">
-                <div class="mover-bar" style="width:{pct}%;background:{col}"></div>
-            </div>
-            <div class="mover-value" style="color:{col}">{sign}{_e(dfmt)}</div>
-        </div>"""
-    return rows
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CHART SCRIPTS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _chart_donut(canvas_id: str, labels: list, values: list,
-                 accent: str, center_text: str = "") -> str:
-    palette = [accent, "#34D399", "#60A5FA", "#F87171", "#A78BFA",
-               "#FBBF24", "#F97316", "#14B8A6"]
-    colors  = (palette * 3)[:len(values)]
-    lj = json.dumps(labels)
-    vj = json.dumps(values)
-    cj = json.dumps(colors)
-    return f"""
-    new Chart(document.getElementById('{canvas_id}'), {{
-        type: 'doughnut',
-        data: {{ labels: {lj}, datasets: [{{
-            data: {vj}, backgroundColor: {cj},
-            borderWidth: 2, borderColor: 'transparent',
-            hoverOffset: 4
-        }}] }},
-        options: {{
-            cutout: '60%', responsive:true, maintainAspectRatio:false,
-            plugins: {{
-                legend: {{ display:false }},
-                tooltip: {{ callbacks: {{
-                    label: ctx => ' ' + ctx.label + ': ' +
-                        (ctx.raw >= 1000000
-                            ? '$' + (ctx.raw/1000000).toFixed(1) + 'M'
-                            : ctx.raw >= 1000
-                                ? '$' + (ctx.raw/1000).toFixed(1) + 'K'
-                                : '$' + ctx.raw.toFixed(0))
-                }}}}
-            }},
-            animation: {{ duration: 0 }}
-        }}
-    }});"""
-
-
-def _chart_sparkline(canvas_id: str, values: list, accent: str) -> str:
-    vj = json.dumps(values)
-    lj = json.dumps([str(i) for i in range(len(values))])
-    return f"""
-    new Chart(document.getElementById('{canvas_id}'), {{
-        type: 'line',
-        data: {{ labels: {lj}, datasets: [{{
-            data: {vj}, borderColor: '{accent}', borderWidth: 2,
-            pointRadius: 0, fill: true,
-            backgroundColor: '{accent}22',
-            tension: 0.4
-        }}] }},
-        options: {{
-            responsive:true, maintainAspectRatio:false,
-            plugins: {{ legend:{{display:false}}, tooltip:{{enabled:false}} }},
-            scales: {{
-                x: {{ display:false }},
-                y: {{ display:false }}
-            }},
-            animation: {{ duration:0 }}
-        }}
-    }});"""
-
-
-def _chart_bar_horizontal(canvas_id: str, labels: list, values: list,
-                           colors: list, pal: dict) -> str:
-    lj = json.dumps(labels)
-    vj = json.dumps(values)
-    cj = json.dumps(colors)
-    tc = pal['muted']
-    return f"""
-    new Chart(document.getElementById('{canvas_id}'), {{
-        type: 'bar',
-        data: {{ labels: {lj}, datasets: [{{
-            data: {vj}, backgroundColor: {cj},
-            borderRadius: 3, borderWidth: 0
-        }}] }},
-        options: {{
-            indexAxis: 'y', responsive:true, maintainAspectRatio:false,
-            plugins: {{ legend:{{display:false}},
-                tooltip:{{ callbacks:{{ label: ctx => ' $' +
-                    (Math.abs(ctx.raw)>=1000000
-                        ? (ctx.raw/1000000).toFixed(1)+'M'
-                        : Math.abs(ctx.raw)>=1000
-                            ? (ctx.raw/1000).toFixed(1)+'K'
-                            : ctx.raw.toFixed(0)) }} }}
-            }},
-            scales: {{
-                x: {{ display:false, grid:{{display:false}} }},
-                y: {{ ticks:{{ color:'{tc}', font:{{size:9}} }},
-                      grid:{{display:false}}, border:{{display:false}} }}
-            }},
-            animation: {{ duration:0 }}
-        }}
-    }});"""
-
-
-def _chart_line_vs_target(canvas_id: str, actuals: list, targets: list,
-                           accent: str, pal: dict) -> str:
-    lj  = json.dumps([str(i) for i in range(len(actuals))])
-    aj  = json.dumps(actuals)
-    tj  = json.dumps(targets)
-    tc  = pal['muted']
-    return f"""
-    new Chart(document.getElementById('{canvas_id}'), {{
-        type: 'bar',
-        data: {{
-            labels: {lj},
-            datasets: [
-                {{ type:'bar', label:'Actual', data:{aj},
-                   backgroundColor:'{accent}88', borderRadius:3, borderWidth:0 }},
-                {{ type:'line', label:'Target', data:{tj},
-                   borderColor:'#F87171', borderWidth:2,
-                   pointRadius:0, fill:false, tension:0.3 }}
-            ]
-        }},
-        options: {{
-            responsive:true, maintainAspectRatio:false,
-            plugins: {{ legend:{{ labels:{{ color:'{tc}', font:{{size:9}} }} }} }},
-            scales: {{
-                x: {{ display:false }},
-                y: {{ ticks:{{ color:'{tc}', font:{{size:8}} }},
-                      grid:{{ color:'{pal["border"]}' }},
-                      border:{{ display:false }} }}
-            }},
-            animation: {{ duration:0 }}
-        }}
-    }});"""
-
-
-def _chart_radar(canvas_id: str, labels: list, values: list,
-                 accent: str, pal: dict) -> str:
-    lj = json.dumps(labels)
-    vj = json.dumps(values)
-    tc = pal['muted']
-    return f"""
-    new Chart(document.getElementById('{canvas_id}'), {{
-        type: 'radar',
-        data: {{ labels: {lj}, datasets: [{{
-            data: {vj}, borderColor:'{accent}', borderWidth:2,
-            backgroundColor:'{accent}33', pointBackgroundColor:'{accent}',
-            pointRadius:3
-        }}] }},
-        options: {{
-            responsive:true, maintainAspectRatio:false,
-            plugins: {{ legend:{{display:false}} }},
-            scales: {{ r: {{
-                ticks:{{ display:false }},
-                grid:{{ color:'{pal["border"]}' }},
-                pointLabels:{{ color:'{tc}', font:{{size:8}} }},
-                angleLines:{{ color:'{pal["border"]}' }}
-            }} }},
-            animation: {{ duration:0 }}
-        }}
-    }});"""
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TEMPLATE 1 — EDITORIAL  (Three-Act)
+# TEMPLATE 1 — EDITORIAL  (Newsletter / Magazine)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
-    accent       = role.get("accent_color", "#F59E0B")
+    accent      = role.get("accent_color","#F59E0B")
     prim, kpis, all_drivers = _resolve_kpis(payload, role)
-    role_kpis    = role.get("kpis", list(kpis.keys()))
-    sparkline    = payload.get("daily_sales_30d", [])
+    role_kpis   = role.get("kpis", list(kpis.keys()))
+    tier        = _role_tier(role)
+    sparkline   = payload.get("daily_sales_30d",[])
 
-    # Secondary KPIs for Act I sidebar
-    sec_kpis = [k for k in role_kpis if k != prim and k in kpis][:2]
-    pk       = kpis.get(prim, {})
-    pval     = _e(pk.get("value_fmt", "—"))
-    ms, mc   = _fmt_pct(pk.get("mom_pct"))
-    ys, _    = _fmt_pct(pk.get("yoy_pct"))
+    pk     = kpis.get(prim, {})
+    pval   = _e(pk.get("value_fmt","—"))
+    ms, mc = _fmt_pct(pk.get("mom_pct"))
+    ys, yc = _fmt_pct(pk.get("yoy_pct"))
+    ws, wc = _fmt_pct(pk.get("wow_pct"))
 
-    # Drivers chart data
-    d_labels, d_values, d_colors = _driver_chart_data(all_drivers, 6)
-    has_drivers = bool(d_labels)
+    headline = _strip_md(getattr(narrative,"headline","") or "")
+    sub      = _strip_md(getattr(narrative,"exec_summary","") or "")
+    sub_1st  = (sub.split(".")[0]+".") if "." in sub else sub[:120]
 
+    # Domain icon
+    icon_html = _domain_icon_svg(role, accent, 64)
+
+    # Stat highlights for hero strip
+    def _pill(label, val, color):
+        if val == "—": return ""
+        return (f'<div style="display:inline-flex;flex-direction:column;'
+                f'align-items:center;background:{color}15;border:1px solid {color}50;'
+                f'border-radius:6px;padding:6px 10px;margin-right:8px;">'
+                f'<div style="font-size:7px;font-weight:700;letter-spacing:2px;'
+                f'color:{pal["muted"]};text-transform:uppercase">{_e(label)}</div>'
+                f'<div style="font-size:14px;font-weight:800;color:{color}">{_e(val)}</div>'
+                f'</div>')
+
+    stat_strip = (
+        f'<div style="font-size:9px;font-weight:700;color:{pal["muted"]};letter-spacing:2px;'
+        f'text-transform:uppercase;margin-bottom:6px">{_e(prim)}</div>'
+        f'<div style="font-size:34px;font-weight:800;color:{pal["text"]};'
+        f'font-family:Georgia,serif;line-height:1.0;margin-bottom:8px">{pval}</div>'
+        f'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+        + _pill("MoM", ms, mc)
+        + _pill("YoY", ys, yc)
+        + (_pill("WoW", ws, wc) if ws != "—" else "")
+        + '</div>'
+    )
+
+    # Secondary KPIs (small row under hero)
+    sec_kpis = [k for k in role_kpis if k != prim and k in kpis][:4]
     sec_html = ""
     for sk in sec_kpis:
-        sd = kpis[sk]
-        sm, smc = _fmt_pct(sd.get("mom_pct"))
-        sec_html += f"""
-        <div style="margin-top:10px;padding-top:10px;border-top:1px solid {pal['border']}">
-            <div style="font-size:8px;color:{pal['muted']};letter-spacing:1px;
-                        text-transform:uppercase;margin-bottom:3px">{_e(sk)}</div>
-            <div style="font-size:14px;font-weight:700;color:{pal['text']};
-                        font-family:Georgia,serif">{_e(sd.get('value_fmt','—'))}</div>
-            <div style="font-size:9px;font-weight:600;color:{smc}">{_e(sm)} MoM</div>
-        </div>"""
+        sd  = kpis[sk]; sm, smc = _fmt_pct(sd.get("mom_pct"))
+        sec_html += (f'<div style="border-left:3px solid {accent};padding-left:8px;'
+                     f'margin-right:14px;">'
+                     f'<div style="font-size:7px;color:{pal["muted"]};letter-spacing:1px;'
+                     f'text-transform:uppercase">{_e(sk)}</div>'
+                     f'<div style="font-size:12px;font-weight:700;color:{pal["text"]};'
+                     f'font-family:Georgia,serif">{_e(sd.get("value_fmt","—"))}</div>'
+                     f'<div style="font-size:8px;font-weight:600;color:{smc}">{_e(sm)} MoM</div>'
+                     f'</div>')
 
-    act1_trend = ""
-    if len(sparkline) >= 4:
-        act1_trend = f"""
-        <div style="margin-top:12px">
-            <div class="section-label">30-Day {_e(prim)} Trend</div>
-            <div class="chart-wrap" style="height:48px">
-                <canvas id="spark1"></canvas>
-            </div>
-        </div>"""
-
-    drivers_html = ""
-    if has_drivers:
-        drivers_html = f"""
-        <div class="chart-wrap" style="height:{min(30*len(d_labels)+20, 180)}px">
-            <canvas id="drvchart"></canvas>
-        </div>"""
-    else:
-        drivers_html = '<div style="color:#64748B;font-size:10px;padding-top:8px">No driver data</div>'
+    # Dimension bar chart
+    dim_gs   = _dim_groups(all_drivers, 1, 8)
+    first_dim = next(iter(dim_gs), None)
+    bar_html  = ""
+    if first_dim:
+        d    = dim_gs[first_dim]
+        n    = len(d["labels"])
+        h    = min(max(n * 28 + 20, 80), 200)
+        bar_html = (f'<div class="sec" style="margin-top:12px">'
+                    f'{_e(first_dim)} Breakdown</div>'
+                    f'<div class="chart-box" style="height:{h}px">'
+                    f'<canvas id="ed_bar"></canvas></div>')
 
     return f"""
-    <div class="card">
-        {_block_masthead(payload, role, pal, accent)}
-        {_block_headline(narrative, pal)}
-        <div style="display:flex;gap:16px;flex:1">
-            <!-- Act I: KPI + sparkline -->
-            <div style="flex:0 0 230px;border-right:1px solid {pal['border']};padding-right:16px">
-                <div class="section-label">Act I · Where We Are</div>
-                <div style="font-size:8px;color:{pal['muted']};letter-spacing:1px;
-                            text-transform:uppercase;margin-bottom:4px">{_e(prim)}</div>
-                <div style="font-size:40px;font-weight:700;color:{pal['text']};
-                            font-family:Georgia,serif;line-height:1.1">{pval}</div>
-                <div style="font-size:11px;font-weight:600;color:{mc};margin-top:4px">
-                    {_e(ms)} MoM &nbsp;·&nbsp; {_e(ys)} YoY
-                </div>
-                {sec_html}
-                {act1_trend}
-            </div>
-            <!-- Act II: Drivers -->
-            <div style="flex:1;border-right:1px solid {pal['border']};padding-right:16px">
-                <div class="section-label">Act II · What Moved It</div>
-                <div style="font-size:9px;color:{pal['subtext']};font-style:italic;
-                            margin-bottom:10px">Top drivers vs prior period</div>
-                {drivers_html}
-            </div>
-            <!-- Act III: Action -->
-            <div style="flex:0 0 200px">
-                <div class="section-label">Act III · The Call</div>
-                {_block_action(narrative, role, pal, accent)}
-            </div>
-        </div>
-        {_block_footer(narrative, accent, pal)}
-    </div>"""
+<div class="card">
+  {_masthead(payload, role, pal, accent)}
+  <!-- Hero strip -->
+  <div class="ed-hero">
+    {icon_html}
+    <div style="flex:1">
+      <div class="ed-headline">{_e(headline)}</div>
+      <div class="ed-sub">{_e(sub_1st)}</div>
+    </div>
+    <div style="flex:0 0 180px;padding-left:16px;border-left:1px solid {pal['border']}">
+      {stat_strip}
+    </div>
+  </div>
+  <!-- Secondary KPI row -->
+  {f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid {pal["border"]}">{sec_html}</div>' if sec_html else ''}
+  <!-- Narrative columns + bar chart -->
+  <div style="display:flex;gap:0;margin-top:2px">
+    <div style="flex:1;padding-right:14px;border-right:1px solid {pal['border']}">
+      {_narrative_section(narrative, pal, accent, kpis, role_kpis, tier)}
+    </div>
+    <div style="flex:0 0 220px;padding-left:16px">
+      {bar_html}
+    </div>
+  </div>
+  {_footer(narrative, accent, pal)}
+</div>"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEMPLATE 2 — SCORECARD  (KPI grid + donut)
+# TEMPLATE 2 — SCORECARD  (KPI grid + sparklines + filters)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
-    accent      = role.get("accent_color", "#F59E0B")
+    accent      = role.get("accent_color","#F59E0B")
     prim, kpis, all_drivers = _resolve_kpis(payload, role)
     role_kpis   = role.get("kpis", list(kpis.keys()))
-    # Cap at 9 KPIs → renders as a clean 3-column grid without excess height
     show_kpis   = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:9]
+    tier        = _role_tier(role)
+    sparkline   = payload.get("daily_sales_30d",[])
+    dim_gs      = _dim_groups(all_drivers, 4, 8)
 
-    d_labels, d_values = _donut_data(all_drivers)
-    if not d_values:                                   # fallback: KPI value mix
-        d_labels, d_values = _kpi_donut_fallback(kpis, show_kpis)
-    has_donut = bool(d_values)
-
-    legend_html = ''.join(
-        f'<div style="display:flex;align-items:center;gap:6px;margin-top:6px">'
-        f'<div style="width:8px;height:8px;border-radius:50%;background:'
-        f'{[accent,"#34D399","#60A5FA","#F87171","#A78BFA"][i%5]}"></div>'
-        f'<div style="font-size:9px;color:{pal["subtext"]};white-space:nowrap;'
-        f'overflow:hidden;text-overflow:ellipsis;max-width:180px">{_e(l)}</div></div>'
-        for i, l in enumerate(d_labels)
-    ) if has_donut else ''
-
-    return f"""
-    <div class="card">
-        {_block_masthead(payload, role, pal, accent)}
-        {_block_headline(narrative, pal)}
-        <div style="display:flex;gap:16px;flex:1">
-            <!-- KPI grid — max 9 tiles, 3-column wrap -->
-            <div style="flex:1">
-                {_block_kpi_tiles(kpis, show_kpis, pal, accent)}
-            </div>
-            <!-- Right column: donut + legend + action -->
-            <div style="flex:0 0 220px;display:flex;flex-direction:column;gap:12px">
-                <div>
-                    <div class="section-label">Contribution Mix</div>
-                    {'<div class="chart-wrap" style="height:180px"><canvas id="donut1"></canvas></div>' if has_donut else '<div style="color:#64748B;font-size:10px">No driver data</div>'}
-                    {legend_html}
-                </div>
-                <!-- Action block fills remaining space below donut -->
-                <div style="flex:1">
-                    {_block_action(narrative, role, pal, accent)}
-                </div>
-            </div>
-        </div>
-        {_block_footer(narrative, accent, pal)}
-    </div>"""
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TEMPLATE 3 — STORY ARC  (Narrative-first + bar chart)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _tmpl_story_arc(narrative, payload: dict, role: dict, pal: dict) -> str:
-    accent      = role.get("accent_color", "#F59E0B")
-    prim, kpis, all_drivers = _resolve_kpis(payload, role)
-    role_kpis   = role.get("kpis", list(kpis.keys()))
-    side_kpis   = [k for k in role_kpis if k != prim and k in kpis][:4]
-    pk          = kpis.get(prim, {})
-    pval        = _e(pk.get("value_fmt", "—"))
-    ms, mc      = _fmt_pct(pk.get("mom_pct"))
-    ys, _       = _fmt_pct(pk.get("yoy_pct"))
-
-    d_labels, d_values, d_colors = _driver_chart_data(all_drivers, 8)
-
-    side_html = ""
-    for sk in side_kpis:
-        sd = kpis[sk]
-        sm, smc = _fmt_pct(sd.get("mom_pct"))
-        side_html += f"""
-        <div style="background:{pal['surface']};border:1px solid {pal['border']};
-                    border-radius:6px;padding:10px 12px;margin-bottom:8px">
-            <div style="font-size:8px;color:{pal['muted']};letter-spacing:1px;
-                        text-transform:uppercase;margin-bottom:3px">{_e(sk)}</div>
-            <div style="font-size:16px;font-weight:700;color:{pal['text']};
-                        font-family:Georgia,serif">{_e(sd.get('value_fmt','—'))}</div>
-            <div style="font-size:9px;font-weight:600;color:{smc};margin-top:2px">{_e(sm)} MoM</div>
-        </div>"""
-
-    return f"""
-    <div class="card">
-        {_block_masthead(payload, role, pal, accent)}
-        <div style="border-left:4px solid {accent};padding-left:12px;margin-bottom:12px">
-            {_block_headline(narrative, pal)}
-        </div>
-        <div style="display:flex;gap:16px;flex:1">
-            <!-- Driver breakdown chart -->
-            <div style="flex:1">
-                <div class="section-label">Driver Breakdown</div>
-                {'<div class="chart-wrap" style="height:180px"><canvas id="drvbar"></canvas></div>' if d_labels else '<div style="color:#64748B;font-size:10px">No driver data</div>'}
-            </div>
-            <!-- Right panel: hero KPI + secondary -->
-            <div style="flex:0 0 210px">
-                <div class="section-label">Key Metrics</div>
-                <div style="font-size:34px;font-weight:700;color:{pal['text']};
-                            font-family:Georgia,serif;line-height:1.1">{pval}</div>
-                <div style="font-size:8px;color:{pal['muted']};letter-spacing:2px;
-                            text-transform:uppercase;margin:4px 0">{_e(prim)}</div>
-                <div style="font-size:10px;font-weight:600;color:{mc};margin-bottom:10px">
-                    {_e(ms)} MoM · {_e(ys)} YoY</div>
-                {side_html}
-            </div>
-        </div>
-        <div style="margin-top:10px">
-            {_block_action(narrative, role, pal, accent)}
-        </div>
-        {_block_footer(narrative, accent, pal)}
-    </div>"""
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TEMPLATE 4 — OPS DASHBOARD  (Traffic lights + movers + chart)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _tmpl_ops_dashboard(narrative, payload: dict, role: dict, pal: dict) -> str:
-    accent      = role.get("accent_color", "#F59E0B")
-    prim, kpis, all_drivers = _resolve_kpis(payload, role)
-    role_kpis   = role.get("kpis", list(kpis.keys()))
-    show_kpis   = [k for k in role_kpis if k in kpis][:4] or list(kpis.keys())[:4]
-
-    d_labels, d_values, d_colors = _driver_chart_data(all_drivers, 6)
-
+    # KPI tiles with sparklines
     tiles_html = ""
-    for kname in show_kpis:
-        kd  = kpis[kname]
-        rc  = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
-        val = _e(kd.get("value_fmt", "—"))
+    for i, kn in enumerate(show_kpis):
+        kd   = kpis[kn]
+        val  = _e(kd.get("value_fmt","—"))
         ms, mc = _fmt_pct(kd.get("mom_pct"))
-        val_cls = "small" if len(kd.get("value_fmt","—")) > 8 else ""
+        ys, yc = _fmt_pct(kd.get("yoy_pct"))
+        ws, wc = _fmt_pct(kd.get("wow_pct"))
+        rag  = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
+        target_delta = kd.get("target_pct")
+        target_html  = ""
+        if target_delta is not None:
+            ts, tc_ = _fmt_pct(target_delta)
+            target_html = (f'<div class="kpi-d" style="color:{tc_};font-size:8px">'
+                           f'vs Target {_e(ts)}</div>')
+        val_cls = "sm" if len(str(val)) > 8 else ""
+        has_spark = len(sparkline) >= 4
+        spark_id  = f"sc_spark_{i}"
         tiles_html += f"""
-        <div class="kpi-tile" style="border-left:5px solid {rc};padding-left:10px;
-                                      flex:1 1 180px">
-            <div class="kpi-name">{_e(kname)}</div>
-            <div class="kpi-value {val_cls}">{val}</div>
-            <div class="kpi-delta" style="color:{mc}">{_e(ms)} MoM</div>
-        </div>"""
+<div class="kpi-tile">
+  <div class="kpi-rag" style="background:{rag}"></div>
+  <div class="kpi-name">{_e(kn)}</div>
+  <div class="kpi-val {val_cls}">{val}</div>
+  {f'<div class="kpi-spark"><canvas id="{spark_id}"></canvas></div>' if has_spark else ''}
+  <div class="kpi-d" style="color:{mc}">{_e(ms)} MoM</div>
+  <div class="kpi-d" style="color:{yc}">{_e(ys)} YoY</div>
+  {f'<div class="kpi-d" style="color:{wc}">{_e(ws)} WoW</div>' if ws != "—" else ''}
+  {target_html}
+</div>"""
+
+    # Dimension breakdown chart (switches on filter)
+    first_dim = next(iter(dim_gs), None)
+    dim_chart_html = ""
+    if first_dim:
+        d = dim_gs[first_dim]
+        n = len(d["labels"])
+        dim_chart_html = f"""
+<div style="margin-top:14px;border-top:1px solid {pal['border']};padding-top:12px">
+  <div id="sc-dim-title" class="sec">{_e(first_dim)} Breakdown</div>
+  <div class="chart-box" style="height:{min(max(n*28+20,80),220)}px">
+    <canvas id="sc_dimbar"></canvas>
+  </div>
+</div>"""
 
     return f"""
-    <div class="card">
-        {_block_masthead(payload, role, pal, accent)}
-        <div style="font-size:14px;font-weight:700;color:{pal['text']};
-                    font-family:Georgia,serif;margin-bottom:8px;
-                    border-bottom:1px solid {pal['border']};padding-bottom:8px">
-            {_e(_strip_md(getattr(narrative,'headline',''))[:80])}
-        </div>
-        <!-- Traffic-light KPI tiles -->
-        <div class="kpi-grid" style="margin-bottom:12px">{tiles_html}</div>
-        <!-- Bottom: chart + movers -->
-        <div style="display:flex;gap:16px;flex:1">
-            <div style="flex:1">
-                <div class="section-label">Driver Chart</div>
-                {'<div class="chart-wrap" style="height:160px"><canvas id="opschart"></canvas></div>' if d_labels else '<div style="color:#64748B;font-size:10px">No driver data</div>'}
-            </div>
-            <div style="flex:0 0 240px">
-                <div class="section-label">Top Movers</div>
-                {_block_top_movers(all_drivers, pal, accent, 6)}
-            </div>
-        </div>
-        <!-- Action strip -->
-        <div style="margin-top:10px;background:{accent}0D;border:1px solid {accent}30;
-                    border-radius:6px;padding:10px 14px;display:flex;align-items:center;gap:12px">
-            <div style="font-size:8px;font-weight:700;letter-spacing:3px;
-                        color:{accent};white-space:nowrap">ACTION ·</div>
-            <div style="font-size:10px;font-weight:600;color:{pal['text']}">
-                {_e(_strip_md(getattr(narrative,'recommended_action',''))[:160])}
-            </div>
-        </div>
-        {_block_footer(narrative, accent, pal)}
-    </div>"""
+<div class="card">
+  {_masthead(payload, role, pal, accent, filter_html=_filter_panel(dim_gs))}
+  <div class="sec">Performance Scorecard</div>
+  <div class="kpi-grid">{tiles_html}</div>
+  {dim_chart_html}
+  {_narrative_section(narrative, pal, accent, kpis, role_kpis, tier)}
+  {_footer(narrative, accent, pal)}
+</div>"""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEMPLATE 5 — BOARD PACK  (Formal slide, beige/light)
+# TEMPLATE 3 — DOSSIER  (4-chart analytics deep dive)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _tmpl_board_pack(narrative, payload: dict, role: dict, pal: dict) -> str:
-    raw_accent  = role.get("accent_color", "#F59E0B")
-    accent_eff  = "#1E3A5F" if pal["bg"] in ("#F5F0E8", "#FFFFFF", "#E8ECF4") else raw_accent
+def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
+    accent      = role.get("accent_color","#F59E0B")
     prim, kpis, all_drivers = _resolve_kpis(payload, role)
     role_kpis   = role.get("kpis", list(kpis.keys()))
-    show_kpis   = [k for k in role_kpis if k in kpis][:5] or list(kpis.keys())[:5]
-    badge       = _e(role.get("badge", "ARIA · BOARD BRIEFING"))
-    ref_date    = _fmt_date(payload.get("reference_date", ""))
+    show_kpis   = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:5]
+    tier        = _role_tier(role)
+    sparkline   = payload.get("daily_sales_30d",[])
+    dim_gs      = _dim_groups(all_drivers, 4, 8)
 
-    ws = payload.get("window_start", "")
-    tf = payload.get("timeframe", "1d")
-    range_line = ""
-    if tf != "1d" and ws and ws != payload.get("reference_date",""):
-        range_line = f'{_fmt_date_short(ws)} → {_fmt_date_short(payload.get("reference_date",""))}'
-
-    kpi_tiles = ""
-    n = len(show_kpis)
-    w = max(120, min(150, (840 - (n-1)*8) // n))
-    for kname in show_kpis:
-        kd  = kpis[kname]
-        val = _e(kd.get("value_fmt","—"))
+    # ─ Mini KPI row ──────────────────────────────────────────────────────── #
+    mini_tiles = ""
+    for kn in show_kpis:
+        kd   = kpis[kn]
+        val  = _e(kd.get("value_fmt","—"))
         ms, mc = _fmt_pct(kd.get("mom_pct"))
-        val_size = "18px" if len(kd.get("value_fmt","—")) <= 7 else "14px"
-        kpi_tiles += f"""
-        <div style="background:{pal['surface']};border:1px solid {pal['border']};
-                    border-radius:4px;padding:10px 12px;min-width:{w}px">
-            <div style="font-size:7px;color:{pal['muted']};letter-spacing:1.5px;
-                        font-weight:600;text-transform:uppercase;margin-bottom:6px">{_e(kname[:16])}</div>
-            <div style="font-size:{val_size};font-weight:700;color:{pal['text']};
-                        font-family:Georgia,serif;margin-bottom:4px">{val}</div>
-            <div style="font-size:8.5px;font-weight:600;color:{mc}">{_e(ms)}</div>
-        </div>"""
+        ys, yc = _fmt_pct(kd.get("yoy_pct"))
+        rag  = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
+        mini_tiles += f"""
+<div class="mkpi" style="border-top:2px solid {rag}">
+  <div class="mkpi-name">{_e(kn)}</div>
+  <div class="mkpi-val">{val}</div>
+  <div class="mkpi-d" style="color:{mc}">{_e(ms)} MoM</div>
+  <div class="mkpi-d" style="color:{yc}">{_e(ys)} YoY</div>
+</div>"""
 
-    d_labels, d_values = _donut_data(all_drivers)
-    if not d_values:                                   # fallback: KPI value mix
-        d_labels, d_values = _kpi_donut_fallback(kpis, show_kpis)
-    has_donut = bool(d_values)
+    # ─ Chart grid ────────────────────────────────────────────────────────── #
+    first_dim = next(iter(dim_gs), None)
+    ch_h = 160  # chart height
 
-    exec_text = _e(_strip_md(getattr(narrative, "exec_summary", "") or "")[:220])
-    act_text  = _e(_strip_md(getattr(narrative, "recommended_action", "") or "")[:200])
-    spk_text  = _e(_strip_md(getattr(narrative, "speaker_notes", "") or "")[:180])
+    # Top-left: line trend
+    trend_html = ""
+    if len(sparkline) >= 4:
+        trend_html = f"""
+<div class="chart-box" style="height:{ch_h}px">
+  <canvas id="ds_trend"></canvas>
+</div>"""
+    else:
+        trend_html = f'<div style="height:{ch_h}px;display:flex;align-items:center;justify-content:center;color:{pal["muted"]};font-size:10px">No trend data</div>'
+
+    # Top-right: dimension bar (filterable)
+    dim_bar_html = ""
+    if first_dim:
+        d = dim_gs[first_dim]
+        n = len(d["labels"])
+        dim_bar_html = f'<div class="chart-box" style="height:{ch_h}px"><canvas id="ds_dimbar"></canvas></div>'
+    else:
+        dim_bar_html = f'<div style="height:{ch_h}px;display:flex;align-items:center;justify-content:center;color:{pal["muted"]};font-size:10px">No dimension data</div>'
+
+    # Bottom-left: donut
+    d_labels, d_values = _donut_data_from_drivers(all_drivers)
+    if not d_values:
+        d_labels, d_values = _donut_from_kpis(kpis, show_kpis)
+    donut_html = ""
+    if d_values:
+        legend = "".join(
+            f'<div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">'
+            f'<div style="width:7px;height:7px;border-radius:50%;background:{_palette(accent,len(d_labels))[i]};flex-shrink:0"></div>'
+            f'<div style="font-size:8px;color:{pal["subtext"]};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100px">{_e(l)}</div></div>'
+            for i, l in enumerate(d_labels)
+        )
+        donut_html = f"""
+<div style="display:flex;gap:8px;align-items:flex-start">
+  <div class="chart-box" style="height:{ch_h}px;flex:0 0 {ch_h}px">
+    <canvas id="ds_donut"></canvas>
+  </div>
+  <div style="flex:1;overflow:hidden;padding-top:8px">{legend}</div>
+</div>"""
+    else:
+        donut_html = f'<div style="height:{ch_h}px;display:flex;align-items:center;justify-content:center;color:{pal["muted"]};font-size:10px">No breakdown data</div>'
+
+    # Bottom-right: waterfall
+    wf_labels, wf_floats, wf_colors, _ = _waterfall_data(kpis, prim, all_drivers)
+    waterfall_html = f'<div class="chart-box" style="height:{ch_h}px"><canvas id="ds_wfall"></canvas></div>'
+
+    chart_grid = f"""
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+  <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
+    <div id="ds-trend-title" class="sec">Trend — {_e(prim)}</div>
+    {trend_html}
+  </div>
+  <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
+    <div id="ds-dim-title" class="sec">{_e(first_dim or 'Breakdown')} Breakdown</div>
+    {dim_bar_html}
+  </div>
+  <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
+    <div class="sec">Contribution Mix</div>
+    {donut_html}
+  </div>
+  <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
+    <div class="sec">Period-over-Period Waterfall</div>
+    {waterfall_html}
+  </div>
+</div>"""
 
     return f"""
-    <div style="width:100%;max-width:900px;background:{pal['bg']};
-                font-family:-apple-system,BlinkMacSystemFont,'Inter',Arial,sans-serif">
-        <!-- Formal top bar -->
-        <div style="background:{accent_eff};padding:12px 28px;display:flex;
-                    justify-content:space-between;align-items:center">
-            <div>
-                <div style="color:#FFF;font-size:11px;font-weight:800;letter-spacing:5px">ARIA</div>
-                <div style="color:#FFFFFF99;font-size:8px;letter-spacing:3px;margin-top:2px">{badge}</div>
-            </div>
-            <div style="text-align:right">
-                <div style="color:#FFFFFF99;font-size:9px;letter-spacing:2px">{ref_date}</div>
-                {f'<div style="color:#FFFFFF66;font-size:8px;margin-top:2px">{_e(range_line)}</div>' if range_line else ''}
-            </div>
-        </div>
-        <div style="padding:18px 28px">
-            <!-- Headline -->
-            <div style="font-size:17px;font-weight:700;color:{pal['text']};
-                        font-family:Georgia,serif;margin-bottom:6px;line-height:1.3">
-                {_e(_strip_md(getattr(narrative,'headline','')))}
-            </div>
-            <div style="font-size:10px;color:{pal['muted']};font-style:italic;
-                        margin-bottom:12px">{exec_text}</div>
-            <div style="height:1px;background:{accent_eff};opacity:0.2;margin-bottom:12px"></div>
-            <!-- KPI row -->
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">{kpi_tiles}</div>
-            <div style="height:1px;background:{accent_eff};opacity:0.2;margin-bottom:12px"></div>
-            <!-- Donut + recommendation -->
-            <div style="display:flex;gap:20px">
-                {f'<div><div style="font-size:8px;font-weight:700;letter-spacing:3px;color:{accent_eff};margin-bottom:8px">CONTRIBUTION MIX</div><div style="width:160px;height:130px"><canvas id="bpdonut"></canvas></div></div>' if has_donut else ''}
-                <div style="flex:1">
-                    <div style="font-size:8px;font-weight:700;letter-spacing:3px;
-                                color:{accent_eff};margin-bottom:8px">BOARD RECOMMENDATION</div>
-                    <div style="background:{pal['surface']};border:1px solid {accent_eff}30;
-                                border-radius:4px;padding:12px 14px">
-                        <div style="font-size:12px;font-weight:700;color:{pal['text']};
-                                    font-family:Georgia,serif;line-height:1.4">{act_text}</div>
-                        <div style="font-size:9px;color:{pal['muted']};margin-top:6px">
-                            Owner: {_e(role.get('title','Team'))} · By EOW</div>
-                    </div>
-                </div>
-            </div>
-            <div style="height:1px;background:{accent_eff};opacity:0.15;margin:12px 0 8px"></div>
-            <div style="font-size:8px;font-weight:700;letter-spacing:3px;
-                        color:{accent_eff};margin-bottom:6px">ANTICIPATED QUESTIONS</div>
-            <div style="font-size:9px;color:{pal['muted']};font-style:italic;
-                        font-family:Georgia,serif">{spk_text}</div>
-        </div>
-    </div>"""
+<div class="card">
+  {_masthead(payload, role, pal, accent, filter_html=_filter_panel(dim_gs))}
+  <div class="sec">Analytics Dossier</div>
+  <div class="mkpi-row">{mini_tiles}</div>
+  {chart_grid}
+  {_narrative_section(narrative, pal, accent, kpis, role_kpis, tier)}
+  {_footer(narrative, accent, pal)}
+</div>"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEMPLATES REGISTRY
+# ══════════════════════════════════════════════════════════════════════════════
+
+TEMPLATES = {
+    "editorial": _tmpl_editorial,
+    "scorecard": _tmpl_scorecard,
+    "dossier":   _tmpl_dossier,
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
-TEMPLATES = {
-    "editorial":     _tmpl_editorial,
-    "scorecard":     _tmpl_scorecard,
-    "story_arc":     _tmpl_story_arc,
-    "ops_dashboard": _tmpl_ops_dashboard,
-    "board_pack":    _tmpl_board_pack,
-}
-
-
 def generate_html_card(narrative, payload: dict, _config: dict,
                        role_config: Optional[dict] = None) -> str:
     """
-    Main entry point — identical signature to generate_svg() for drop-in use.
-    Returns a self-contained HTML string renderable in browser or Playwright.
+    Returns a self-contained HTML string.  Same signature as the old
+    generate_svg() so all call-sites work without changes.
     """
-    role     = dict(role_config or _DEFAULT_ROLE)
-    kpis     = payload.get("kpis", {})
-    prim     = role.get("primary_kpi")
+    role  = dict(role_config or _DEFAULT_ROLE)
+    kpis  = payload.get("kpis", {})
+    prim  = role.get("primary_kpi")
     if not prim or prim not in kpis:
         prim = next(iter(kpis), "—")
     role["primary_kpi"] = prim
 
-    tmpl_key = role.get("card_template", "editorial")
-    tmpl_fn  = TEMPLATES.get(tmpl_key, _tmpl_editorial)
+    tmpl_key  = role.get("card_template","editorial")
+    tmpl_fn   = TEMPLATES.get(tmpl_key, _tmpl_editorial)
+    style_key = role.get("card_style","dark")
+    pal       = dict(PALETTES.get(style_key, PALETTES["dark"]))
+    accent    = role.get("accent_color","#F59E0B")
 
-    style_key = role.get("card_style", "dark")
-    pal = dict(PALETTES.get(style_key, PALETTES["dark"]))
-    accent = role.get("accent_color", "#F59E0B")
-
-    # Build chart scripts
     prim_real, _, all_drivers = _resolve_kpis(payload, role)
-    sparkline  = payload.get("daily_sales_30d", [])
-    chart_js   = ""
+    sparkline  = payload.get("daily_sales_30d",[])
+    dim_gs     = _dim_groups(all_drivers, 4, 8)
+    first_dim  = next(iter(dim_gs), None)
+
+    # ── Build Chart.js init scripts ─────────────────────────────────────── #
+    chart_js = "var ARIA_CHARTS = {};\n"
 
     if tmpl_key == "editorial":
-        if len(sparkline) >= 4:
-            chart_js += _chart_sparkline("spark1", sparkline, accent)
-        d_labels, d_values, d_colors = _driver_chart_data(all_drivers)
-        if d_labels:
-            chart_js += _chart_bar_horizontal("drvchart", d_labels, d_values, d_colors, pal)
+        # Driver bar
+        if first_dim:
+            d = dim_gs[first_dim]
+            chart_js += _chart_bar_h("ed_bar", d["labels"], d["values"], accent, pal)
 
     elif tmpl_key == "scorecard":
-        kpis_all = payload.get("kpis", {})
-        role_kpis = role.get("kpis", list(kpis_all.keys()))
-        show_kpis = [k for k in role_kpis if k in kpis_all] or list(kpis_all.keys())[:6]
-        d_labels, d_values = _donut_data(all_drivers)
+        # Sparklines per tile
+        role_kpis = role.get("kpis", list(kpis.keys()))
+        show_kpis = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:9]
+        if len(sparkline) >= 4:
+            for i in range(len(show_kpis)):
+                # Scale sparkline to this KPI's magnitude
+                chart_js += _chart_sparkline(f"sc_spark_{i}", sparkline[-30:], accent)
+        # Dimension bar (filterable)
+        if first_dim:
+            d = dim_gs[first_dim]
+            chart_js += _chart_bar_v("sc_dimbar", d["labels"], d["values"], accent, pal)
+
+    elif tmpl_key == "dossier":
+        # Line trend
+        if len(sparkline) >= 4:
+            chart_js += _chart_line_trend("ds_trend", sparkline[-60:], accent, pal)
+        # Dimension bar (filterable)
+        if first_dim:
+            d = dim_gs[first_dim]
+            chart_js += _chart_bar_v("ds_dimbar", d["labels"], d["values"], accent, pal)
+        # Donut
+        d_labels, d_values = _donut_data_from_drivers(all_drivers)
         if not d_values:
-            d_labels, d_values = _kpi_donut_fallback(kpis_all, show_kpis)
+            d_labels, d_values = _donut_from_kpis(kpis,
+                ([k for k in role.get("kpis",[]) if k in kpis] or list(kpis.keys()))[:5])
         if d_values:
-            chart_js += _chart_donut("donut1", d_labels, d_values, accent, prim_real)
+            chart_js += _chart_donut("ds_donut", d_labels, d_values, accent)
+        # Waterfall
+        wf_l, wf_f, wf_c, _ = _waterfall_data(kpis, prim_real, all_drivers)
+        if wf_f:
+            chart_js += _chart_waterfall("ds_wfall", wf_l, wf_f, wf_c, pal)
 
-    elif tmpl_key == "story_arc":
-        d_labels, d_values, d_colors = _driver_chart_data(all_drivers, 8)
-        if d_labels:
-            chart_js += _chart_bar_horizontal("drvbar", d_labels, d_values, d_colors, pal)
+    # ── Interactive filter JS ────────────────────────────────────────────── #
+    dim_data_json = json.dumps({d: dim_gs[d] for d in dim_gs})
+    filter_js = ""
+    if tmpl_key in ("scorecard", "dossier"):
+        bar_id    = "sc_dimbar" if tmpl_key == "scorecard" else "ds_dimbar"
+        title_id  = "sc-dim-title" if tmpl_key == "scorecard" else "ds-dim-title"
+        accent_e  = accent
+        filter_js = f"""
+var ARIA_DIM_DATA = {dim_data_json};
+function ariaFilter(sel) {{
+    var dim = sel.getAttribute('data-dim');
+    var val = sel.value;
+    var d   = ARIA_DIM_DATA[dim];
+    if (!d) return;
+    var chart = ARIA_CHARTS['{bar_id}'];
+    if (chart) {{
+        chart.data.labels = d.labels;
+        chart.data.datasets[0].data = d.values;
+        chart.update('none');
+        var t = document.getElementById('{title_id}');
+        if (t) t.textContent = dim + ' Breakdown' + (val !== 'All' ? ' • '+val : '');
+    }}
+    // Show active filter chip
+    document.querySelectorAll('.filter-chip').forEach(function(c){{c.style.display='none';}});
+    if (val !== 'All') {{
+        var chip = document.createElement('div');
+        chip.className = 'filter-chip';
+        chip.style.display = 'inline-block';
+        chip.textContent = dim + ': ' + val;
+        sel.parentNode.insertBefore(chip, sel.nextSibling);
+    }}
+}}
+"""
 
-    elif tmpl_key == "ops_dashboard":
-        d_labels, d_values, d_colors = _driver_chart_data(all_drivers, 6)
-        if d_labels:
-            chart_js += _chart_bar_horizontal("opschart", d_labels, d_values, d_colors, pal)
-
-    elif tmpl_key == "board_pack":
-        kpis_all = payload.get("kpis", {})
-        role_kpis = role.get("kpis", list(kpis_all.keys()))
-        show_kpis = [k for k in role_kpis if k in kpis_all] or list(kpis_all.keys())[:6]
-        d_labels, d_values = _donut_data(all_drivers)
-        if not d_values:
-            d_labels, d_values = _kpi_donut_fallback(kpis_all, show_kpis)
-        if d_values:
-            chart_js += _chart_donut("bpdonut", d_labels, d_values, accent)
-
+    # ── Build full HTML ──────────────────────────────────────────────────── #
     body = tmpl_fn(narrative, payload, role, pal)
 
     return f"""<!DOCTYPE html>
@@ -973,6 +1159,7 @@ def generate_html_card(narrative, payload: dict, _config: dict,
 <script src="{_CHARTJS}"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {{
+    {filter_js}
     {chart_js}
 }});
 </script>
@@ -981,79 +1168,49 @@ document.addEventListener('DOMContentLoaded', function() {{
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PNG CONVERSION VIA SELENIUM + CHROME
+# PNG CONVERSION  (Selenium headless Chrome — unchanged from v2)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def html_to_png(html_str: str, width: int = 900, height: int = 520,
                 wait_ms: int = 1500) -> bytes:
-    """
-    Convert HTML card to PNG bytes using Selenium headless Chrome.
-    Waits for Chart.js to finish rendering before screenshot.
-
-    Requires: pip install selenium
-    Chrome/Chromium must be available on PATH (pre-installed on GitHub
-    Actions ubuntu-latest runners).
-    """
-    import os
-    import tempfile
-    import time
-
+    import os, tempfile, time
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.chrome.service import Service
     except ImportError:
-        raise RuntimeError(
-            "selenium not installed. Run: pip install selenium"
-        )
+        raise RuntimeError("selenium not installed — run: pip install selenium")
 
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument(f"--window-size={width},{height}")
-    options.add_argument("--hide-scrollbars")
-    options.add_argument("--force-device-scale-factor=1")
+    opts = Options()
+    for arg in ["--headless=new","--no-sandbox","--disable-dev-shm-usage",
+                "--disable-gpu",f"--window-size={width},{height}",
+                "--hide-scrollbars","--force-device-scale-factor=1"]:
+        opts.add_argument(arg)
 
-    # Write HTML to a temp file so Chrome can load it via file://
-    with tempfile.NamedTemporaryFile(
-        suffix=".html", mode="w", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(html_str)
-        tmp_path = fh.name
+    svc = None
+    for path in ("/usr/bin/chromedriver","/usr/local/bin/chromedriver","chromedriver"):
+        if os.path.isfile(path):
+            svc = Service(path)
+            break
 
-    driver = None
+    driver = webdriver.Chrome(service=svc, options=opts) if svc else webdriver.Chrome(options=opts)
     try:
-        # Try webdriver-manager first (local dev), fall back to system chromedriver
-        try:
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
-        except Exception:
-            driver = webdriver.Chrome(options=options)
-
-        # Use a very tall initial viewport so the entire card renders without clipping
-        driver.set_window_size(width, 5000)
-        driver.get(f"file://{tmp_path}")
-        time.sleep(wait_ms / 1000)        # let Chart.js animate + render
-
-        # Measure the card's FULL scrollHeight (includes content below the fold)
-        actual_h = driver.execute_script("""
-            var c = document.querySelector('.card');
-            if (!c) c = document.body.firstElementChild || document.body;
-            return Math.ceil(Math.max(c.scrollHeight, c.offsetHeight,
-                                      c.getBoundingClientRect().height));
-        """) or height
-        actual_h = max(int(actual_h), height)
-
-        # Resize viewport to exact card height, then take a clean full-page screenshot
-        driver.set_window_size(width, actual_h + 2)
-        time.sleep(0.3)  # let layout settle after resize
-        png: bytes = driver.get_screenshot_as_png()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w",
+                                         encoding="utf-8") as f:
+            f.write(html_str)
+            tmp = f.name
+        driver.get(f"file://{tmp}")
+        time.sleep(wait_ms / 1000)
+        # Fit viewport to card content
+        card_h = driver.execute_script(
+            "var c=document.querySelector('.card'); return c?c.scrollHeight:document.body.scrollHeight;")
+        driver.set_window_size(width, max(card_h + 40, 200))
+        time.sleep(0.3)
+        png = driver.get_screenshot_as_png()
     finally:
-        if driver:
-            driver.quit()
-        os.unlink(tmp_path)
-
+        driver.quit()
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
     return png
