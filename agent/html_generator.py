@@ -223,18 +223,38 @@ def _dim_groups(all_drivers: list, max_dims: int = 4, max_members: int = 8) -> d
     """
     Returns {dimension: {labels:[...], values:[...]}} from driver list.
     Used for dimension filter dropdowns and bar charts.
+
+    Priority for bar-chart value:
+      1. d["value"]   – explicit value field (wizard path)
+      2. d["current"] – current-period aggregate (agent/DriverItem path)
+      3. abs(d["delta"]) – fallback change magnitude
+    Condition guards only on dim/member being truthy — never on val,
+    so zero-delta entries (stable data) still appear in the chart.
     """
     raw: dict[str, dict] = defaultdict(dict)
     for d in all_drivers:
         dim    = d.get("dimension", "")
         member = d.get("member", "")
-        val    = d.get("value") or abs(d.get("delta", 0))
-        if dim and member and val:
+        if not dim or not member:
+            continue
+        # Use current-period value preferentially so bars show magnitude,
+        # not just change — avoids empty charts when YoY deltas are tiny.
+        val = (d.get("value")
+               or d.get("current")
+               or abs(d.get("delta") or 0))
+        if val:
             raw[dim][member] = max(raw[dim].get(member, 0), val)
+        else:
+            # Register the member with 0 so it still appears (will be sorted last)
+            raw[dim].setdefault(member, 0)
 
     result = {}
     for dim in list(raw.keys())[:max_dims]:
-        items  = sorted(raw[dim].items(), key=lambda x: x[1], reverse=True)[:max_members]
+        # Only include members with a positive value for meaningful bars
+        items = sorted(
+            [(m, v) for m, v in raw[dim].items() if v > 0],
+            key=lambda x: x[1], reverse=True
+        )[:max_members]
         if items:
             labels, values = zip(*items)
             result[dim] = {"labels": list(labels), "values": [round(v, 2) for v in values]}
@@ -578,7 +598,10 @@ def _chart_waterfall(cid: str, labels: list, floats: list,
                 scales:{{
                     x:{{ ticks:{{ color:'{tc}', font:{{size:9}} }},
                          grid:{{display:false}}, border:{{display:false}} }},
-                    y:{{ ticks:{{ color:'{tc}', font:{{size:8}} }},
+                    y:{{ min:0,
+                         ticks:{{ color:'{tc}', font:{{size:8}},
+                             callback: v => v>=1e6?'$'+(v/1e6).toFixed(0)+'M':
+                                          v>=1e3?'$'+(v/1e3).toFixed(0)+'K':v }},
                          grid:{{ color:'{pal["border"]}' }}, border:{{display:false}} }}
                 }},
                 animation:{{duration:0}} }}
@@ -589,13 +612,28 @@ def _chart_waterfall(cid: str, labels: list, floats: list,
 # ── KPI donut fallback ────────────────────────────────────────────────────── #
 
 def _donut_data_from_drivers(all_drivers: list, top_n: int = 5):
-    items = sorted([d for d in all_drivers if d.get("delta",0)>0],
-                   key=lambda x: x["delta"], reverse=True)[:top_n]
-    if not items:
-        items = sorted(all_drivers, key=lambda x: abs(x.get("delta",0)),
-                       reverse=True)[:top_n]
-    labels = [str(d.get("member","?"))[:18] for d in items]
-    values = [abs(d.get("delta",0)) for d in items]
+    """
+    Build donut chart data from driver list.
+
+    For segment SIZE we use current-period value (shows proportion of the total)
+    rather than delta magnitude, so the chart is readable even when YoY change
+    is small.  Delta is only used as a last-resort fallback.
+    """
+    def _seg_val(d):
+        return (d.get("value")
+                or d.get("current")
+                or abs(d.get("delta") or 0))
+
+    # Filter to dimension members that have a meaningful value
+    candidates = [d for d in all_drivers if _seg_val(d) > 0]
+
+    # Prefer members with positive momentum for a "contribution" donut;
+    # fall back to all candidates sorted by absolute size
+    pos = [d for d in candidates if (d.get("delta") or 0) >= 0]
+    items = sorted(pos or candidates, key=_seg_val, reverse=True)[:top_n]
+
+    labels = [str(d.get("member", "?"))[:18] for d in items]
+    values = [round(_seg_val(d), 2) for d in items]
     return labels, values
 
 
@@ -1004,7 +1042,7 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
     {trend_html}
   </div>
   <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
-    <div id="ds-dim-title" class="sec">{_e(first_dim or 'Breakdown')} Breakdown</div>
+    <div id="ds-dim-title" class="sec">{_e(f"{first_dim} Breakdown" if first_dim else "Dimension Breakdown")}</div>
     {dim_bar_html}
   </div>
   <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
