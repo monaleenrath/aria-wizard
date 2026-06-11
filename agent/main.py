@@ -103,6 +103,14 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
     drivers_yoy = analyze_drivers(df, config, ref, compare_to="yoy")
     drivers_dod = analyze_drivers(df, config, ref, compare_to="dod")
 
+    log.info("drivers_yoy summary: %s",
+             {k: len(v) for k, v in drivers_yoy.items()})
+    log.info("config dimensions: %s",
+             config.get("drivers", {}).get("dimensions", []))
+    log.info("config kpis (name/column/agg): %s",
+             [(k.get("name"), k.get("column","?"), k.get("agg","?"))
+              for k in config.get("metrics", {}).get("kpis", [])])
+
     # 4 — NARRATIVE -------------------------------------------------------- #
     # Compute last-30-days daily sales for the sparkline in the SVG card
     import datetime as _dt2
