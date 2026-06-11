@@ -2994,55 +2994,51 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     # Inject fluid CSS so the card fills the Streamlit iframe width instead of
     # overflowing at 900px.  In the PNG path Chrome's viewport IS 900px, so
     # width:100% still renders at exactly 900px — no change to Slack output.
-    # Prevent the iframe body from adding unwanted scrollbars or padding
+    # Cards are designed at 900px. Force body to that width so all templates
+    # (including editorial's fixed flex columns) render at their natural size.
     fluid_css = """<style>
-html, body { margin: 0; padding: 0; overflow-x: hidden; background: transparent; }
+html { overflow-x: hidden; }
+body { margin: 0; padding: 0; width: 900px; transform-origin: top left; }
 </style>"""
     html = html.replace('</head>', fluid_css + '\n</head>')
 
     # Scale-to-fit + auto-height script:
-    # 1. Let the card render at its natural width (up to 900px) so internal
-    #    layouts (charts, columns, grids) look exactly as designed.
-    # 2. If the card is wider than the iframe viewport, scale the whole card
-    #    down proportionally — no cropping, no layout reflow.
-    # 3. Report the scaled height back to Streamlit via postMessage so the
-    #    iframe shrinks to fit and no empty space remains at the bottom.
+    # • Body is set to 900px (the card's design width) so all internal layouts
+    #   render correctly — editorial 3-column, scorecard grid, etc.
+    # • If the iframe viewport is narrower than 900px, we scale the whole body
+    #   down proportionally. No cropping, no reflow for any template.
+    # • The scaled height is reported to Streamlit via postMessage so the
+    #   iframe snaps to exactly the right height with no empty space.
     fit_and_resize_script = """
 <script>
 (function fitAndResize() {
+    var DESIGN_W = 900;
+
     function apply() {
-        // Find the outermost card element (works across all 5 templates)
-        var card = document.querySelector('.card')
-                || document.querySelector('[class*="card"]')
-                || document.body.firstElementChild;
-        if (!card) return;
-
-        // Reset any previous scale so we measure the natural size
-        card.style.transform      = '';
-        card.style.transformOrigin = 'top left';
-
         var vw = window.innerWidth || document.documentElement.clientWidth;
-        var cw = card.scrollWidth;
+        // Only scale down; never enlarge
+        var scale = (vw > 0 && vw < DESIGN_W) ? vw / DESIGN_W : 1;
 
-        // Scale down only if needed; never scale up
-        var scale = (cw > 0 && cw > vw) ? (vw / cw) : 1;
         if (scale < 1) {
-            card.style.transform = 'scale(' + scale + ')';
+            document.body.style.transform = 'scale(' + scale + ')';
+        } else {
+            document.body.style.transform = '';
         }
 
-        // Report the scaled height back so the iframe fits snugly
+        // Measure the body's natural (pre-scale) height, then scale it
         var naturalH = Math.max(
-            card.scrollHeight,
-            card.offsetHeight
+            document.body.scrollHeight,
+            document.body.offsetHeight
         );
-        var scaledH  = Math.ceil(naturalH * scale);
+        var scaledH = Math.ceil(naturalH * scale);
+
         window.parent.postMessage(
             { type: 'streamlit:setFrameHeight', height: scaledH + 16 },
             '*'
         );
     }
 
-    // Fire after Chart.js finishes rendering (two passes for safety)
+    // Fire after Chart.js finishes (two passes for safety)
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function() {
             setTimeout(apply, 400);
