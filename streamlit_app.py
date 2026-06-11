@@ -139,42 +139,28 @@ CARD_STYLES = {
     },
 }
 
-# ── Card templates (5 distinct layouts) ────────────────────────────────────────
+# ── Card templates (3 redesigned layouts) ───────────────────────────────────────
 CARD_TEMPLATES = {
     "editorial": {
         "label":    "📰 Editorial",
-        "tagline":  "Three-act: KPIs · Drivers · Action",
-        "desc":     "Hero number + sparkline trend, driver bar charts, action box. The original ARIA format.",
-        "chart":    "Sparkline",
-        "best_for": "CEO · CFO",
+        "tagline":  "Newsletter · Inline MOM/YOY/WOW · One bar chart",
+        "desc":     "Magazine-style narrative with a big hero number, inline stat highlights in paragraphs, and a single dimension bar chart. No filters. Tone adapts by role tier.",
+        "chart":    "Bar",
+        "best_for": "CEO · Board · C-Suite",
     },
     "scorecard": {
         "label":    "🏆 Scorecard",
-        "tagline":  "KPI grid tiles + donut chart",
-        "desc":     "All KPIs at a glance with RAG status dots. Donut chart shows contribution mix.",
-        "chart":    "Donut",
-        "best_for": "CFO · VP",
+        "tagline":  "KPI tiles + sparklines + dimension filters",
+        "desc":     "Role-specific KPI grid — each tile has a 30-day sparkline, MOM/YOY/WOW delta chips and target indicator. Up to 4 dimension filters switch the breakdown chart.",
+        "chart":    "Sparkline + Bar",
+        "best_for": "CFO · VP · Director",
     },
-    "story_arc": {
-        "label":    "📖 Story Arc",
-        "tagline":  "Narrative-first + treemap",
-        "desc":     "Big pull-quote headline drives the story. Treemap shows proportional driver breakdown.",
-        "chart":    "Treemap",
-        "best_for": "CEO · Board",
-    },
-    "ops_dashboard": {
-        "label":    "⚡ Ops Dashboard",
-        "tagline":  "Traffic lights + heat map",
-        "desc":     "Traffic-light KPI tiles for instant RAG status. Heat map surfaces dimension patterns.",
-        "chart":    "Heat Map",
-        "best_for": "COO · Operations",
-    },
-    "board_pack": {
-        "label":    "🏛️ Board Pack",
-        "tagline":  "Formal slide with donut",
-        "desc":     "Clean board-presentation layout. Formal header, KPI row, donut, recommendation box.",
-        "chart":    "Donut",
-        "best_for": "Board · C-Suite",
+    "dossier": {
+        "label":    "🔍 Dossier",
+        "tagline":  "5 KPI mini-tiles + 2×2 chart grid",
+        "desc":     "Full analytics deep-dive: 5 mini KPI boxes then a 2×2 chart grid (Trend line · Dimension bar · Contribution donut · Period-over-period waterfall). Up to 4 filters.",
+        "chart":    "4 Charts",
+        "best_for": "COO · Operations · Management",
     },
 }
 
@@ -2985,6 +2971,19 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     mod_role["card_style"]    = style_key
     mod_role["primary_kpi"]   = prim_kpi
     mod_role["kpis"]          = list(role_kpis_filtered.keys())
+    # Derive company name from uploaded filename for logo fetch
+    if not mod_role.get("company_name"):
+        import re as _re
+        _fname = ""
+        try:
+            import streamlit as _st
+            _fname = _st.session_state.get("data_name", "")
+        except Exception:
+            pass
+        if _fname:
+            _stem = _re.sub(r"\.\w+$", "", _fname)
+            _co   = _re.split(r"[_\-\s]+", _stem)[0]
+            mod_role["company_name"] = _co.strip()
 
     try:
         html = generate_html_card(narrative_obj, payload, {}, mod_role)
@@ -4472,113 +4471,143 @@ def step_preview_card():
     st.divider()
 
     # ────────────────────────────────────────────────────────────────────────── #
-    # 3. CHOOSE CARD TEMPLATE — mini SVG wireframe thumbnails
+    # 3. CHOOSE CARD TEMPLATE — live scaled HTML thumbnails
     # ────────────────────────────────────────────────────────────────────────── #
     st.subheader("3. Choose Your Card Template")
 
     if "card_template" not in st.session_state:
         st.session_state.card_template = "editorial"
 
-    # Mini SVG wireframes representing each template's visual layout (80×56 viewBox)
-    _TMPL_WIREFRAMES = {
-        "editorial": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+    # ── Generate live thumbnail HTML for a template ──────────────────────── #
+    def _tmpl_thumbnail_html(tk: str, td: dict) -> str:
+        """
+        Returns self-contained HTML for a scaled-down (~0.22×) card preview.
+        Falls back to a styled SVG wireframe if the real HTML can't be built
+        (no narrative yet, import errors, etc.).
+        """
+        accent_map = {"editorial": "#F59E0B", "scorecard": "#60A5FA", "dossier": "#34D399"}
+        accent = accent_map.get(tk, "#F59E0B")
+
+        # Try to build the real card and scale it down
+        try:
+            from agent.html_generator import generate_html_card  # type: ignore
+        except ImportError:
+            try:
+                from html_generator import generate_html_card  # type: ignore
+            except ImportError:
+                generate_html_card = None  # type: ignore
+
+        _narr_obj = st.session_state.get("narrative_obj")
+        _metrics  = st.session_state.get("metrics")
+        _style    = st.session_state.get("card_style", "dark")
+        if generate_html_card and _narr_obj and _metrics:
+            try:
+                mini_html = generate_svg_preview(_narr_obj, _metrics, role_cfg, _style, tk)
+                if mini_html:
+                    # Wrap card HTML in a scaled iframe-lookalike div
+                    import base64 as _b64
+                    _b64_html  = _b64.b64encode(mini_html.encode()).decode()
+                    # iframe scaled to ~200px wide showing the 900px card at 0.222× scale
+                    return (
+                        f'<iframe src="data:text/html;base64,{_b64_html}" '
+                        f'style="width:900px;height:540px;border:none;'
+                        f'transform:scale(0.222);transform-origin:top left;'
+                        f'pointer-events:none;display:block;" '
+                        f'scrolling="no"></iframe>'
+                    )
+            except Exception:
+                pass  # fall through to SVG wireframe
+
+        # ── Fallback: SVG wireframe thumbnails ───────────────────────────── #
+        wf_editorial = f"""<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
           <rect width="80" height="56" rx="3" fill="#0B1220"/>
-          <rect x="3" y="3" width="74" height="8" rx="1" fill="#1E293B"/>
-          <rect x="3" y="14" width="28" height="16" rx="1" fill="#1E3A5F"/>
-          <rect x="3" y="14" width="28" height="4" rx="1" fill="#3B82F6" opacity="0.6"/>
-          <rect x="34" y="14" width="43" height="2" rx="1" fill="#374151"/>
-          <rect x="34" y="18" width="35" height="2" rx="1" fill="#374151"/>
-          <rect x="34" y="22" width="40" height="2" rx="1" fill="#374151"/>
-          <rect x="3" y="33" width="74" height="2" rx="1" fill="#1F2937"/>
-          <rect x="3" y="37" width="22" height="5" rx="1" fill="#374151"/>
-          <rect x="27" y="37" width="22" height="5" rx="1" fill="#374151"/>
-          <rect x="51" y="37" width="26" height="5" rx="1" fill="#374151"/>
-          <polyline points="3,52 12,48 21,50 30,45 39,47 48,43 57,46 66,41 74,44" fill="none" stroke="#3B82F6" stroke-width="1.5"/>
-        </svg>""",
-        "scorecard": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+          <rect x="3" y="3" width="74" height="7" rx="1" fill="#1E293B"/>
+          <rect x="3" y="3" width="18" height="7" rx="1" fill="{accent}33"/>
+          <rect x="3" y="13" width="16" height="14" rx="1" fill="{accent}22"/>
+          <rect x="21" y="14" width="56" height="2" rx="1" fill="#374151"/>
+          <rect x="21" y="18" width="48" height="2" rx="1" fill="#374151"/>
+          <rect x="21" y="22" width="52" height="2" rx="1" fill="#374151"/>
+          <rect x="3" y="30" width="74" height="1" rx="0" fill="#1F2937"/>
+          <rect x="3" y="33" width="22" height="6" rx="1" fill="#1F2937"/>
+          <rect x="28" y="33" width="22" height="6" rx="1" fill="#1F2937"/>
+          <rect x="53" y="33" width="24" height="6" rx="1" fill="#1F2937"/>
+          <rect x="3" y="42" width="45" height="4" rx="1" fill="#111827"/>
+          <rect x="53" y="42" width="24" height="8" rx="1" fill="#111827"/>
+          <rect x="55" y="44" width="8" height="5" rx="0" fill="{accent}88"/>
+          <rect x="65" y="46" width="8" height="3" rx="0" fill="{accent}55"/>
+        </svg>"""
+
+        wf_scorecard = f"""<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
           <rect width="80" height="56" rx="3" fill="#0B1220"/>
           <rect x="3" y="3" width="74" height="6" rx="1" fill="#1E293B"/>
-          <rect x="3" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
-          <rect x="22" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
-          <rect x="41" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
-          <rect x="60" y="12" width="17" height="13" rx="2" fill="#1E3A5F"/>
-          <circle cx="25" cy="39" r="12" fill="none" stroke="#1F2937" stroke-width="5"/>
-          <circle cx="25" cy="39" r="12" fill="none" stroke="#3B82F6" stroke-width="5" stroke-dasharray="30 45" stroke-dashoffset="-6"/>
-          <circle cx="25" cy="39" r="12" fill="none" stroke="#10B981" stroke-width="5" stroke-dasharray="18 57" stroke-dashoffset="-36"/>
-          <rect x="44" y="29" width="33" height="2" rx="1" fill="#374151"/>
-          <rect x="44" y="34" width="28" height="2" rx="1" fill="#374151"/>
-          <rect x="44" y="39" width="33" height="2" rx="1" fill="#374151"/>
-          <rect x="44" y="44" width="20" height="2" rx="1" fill="#374151"/>
-        </svg>""",
-        "story_arc": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
-          <rect width="80" height="56" rx="3" fill="#0B1220"/>
-          <rect x="3" y="3" width="74" height="5" rx="1" fill="#1E293B"/>
-          <rect x="3" y="11" width="74" height="10" rx="1" fill="#1E3A5F" opacity="0.7"/>
-          <rect x="5" y="13" width="50" height="2" rx="1" fill="#93C5FD"/>
-          <rect x="5" y="17" width="38" height="2" rx="1" fill="#93C5FD" opacity="0.5"/>
-          <rect x="3" y="24" width="36" height="14" rx="1" fill="#14532D" opacity="0.8"/>
-          <rect x="41" y="24" width="18" height="14" rx="1" fill="#1E3A5F" opacity="0.8"/>
-          <rect x="61" y="24" width="16" height="14" rx="1" fill="#374151" opacity="0.8"/>
-          <rect x="41" y="39" width="36" height="6" rx="1" fill="#1A3D2B" opacity="0.7"/>
-          <rect x="3" y="41" width="36" height="4" rx="1" fill="#374151" opacity="0.5"/>
-        </svg>""",
-        "ops_dashboard": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
-          <rect width="80" height="56" rx="3" fill="#0B1220"/>
-          <rect x="3" y="3" width="74" height="5" rx="1" fill="#1E293B"/>
-          <rect x="3" y="11" width="17" height="10" rx="2" fill="#14532D"/>
-          <circle cx="8" cy="16" r="3" fill="#10B981"/>
-          <rect x="22" y="11" width="17" height="10" rx="2" fill="#7C2D12"/>
-          <circle cx="27" cy="16" r="3" fill="#EF4444"/>
-          <rect x="41" y="11" width="17" height="10" rx="2" fill="#1E3A5F"/>
-          <circle cx="46" cy="16" r="3" fill="#3B82F6"/>
-          <rect x="60" y="11" width="17" height="10" rx="2" fill="#78350F"/>
-          <circle cx="65" cy="16" r="3" fill="#F59E0B"/>
-          <rect x="3" y="25" width="74" height="2" rx="1" fill="#1F2937"/>
-          <rect x="3" y="28" width="10" height="5" rx="1" fill="#14532D" opacity="0.9"/>
-          <rect x="15" y="28" width="10" height="5" rx="1" fill="#14532D" opacity="0.7"/>
-          <rect x="27" y="28" width="10" height="5" rx="1" fill="#7C2D12" opacity="0.9"/>
-          <rect x="39" y="28" width="10" height="5" rx="1" fill="#1E3A5F" opacity="0.8"/>
-          <rect x="51" y="28" width="10" height="5" rx="1" fill="#14532D" opacity="0.6"/>
-          <rect x="63" y="28" width="14" height="5" rx="1" fill="#78350F" opacity="0.8"/>
-          <rect x="3" y="35" width="10" height="5" rx="1" fill="#1E3A5F" opacity="0.6"/>
-          <rect x="15" y="35" width="10" height="5" rx="1" fill="#14532D" opacity="0.8"/>
-          <rect x="27" y="35" width="10" height="5" rx="1" fill="#14532D" opacity="0.5"/>
-          <rect x="39" y="35" width="10" height="5" rx="1" fill="#7C2D12" opacity="0.6"/>
-          <rect x="51" y="35" width="10" height="5" rx="1" fill="#1E3A5F" opacity="0.9"/>
-          <rect x="63" y="35" width="14" height="5" rx="1" fill="#14532D" opacity="0.7"/>
-          <rect x="3" y="43" width="74" height="4" rx="1" fill="#1E293B" opacity="0.6"/>
-        </svg>""",
-        "board_pack": """<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
-          <rect width="80" height="56" rx="3" fill="#0B1220"/>
-          <rect x="0" y="0" width="80" height="10" rx="3" fill="#1E293B"/>
-          <rect x="3" y="2" width="40" height="3" rx="1" fill="#93C5FD" opacity="0.8"/>
-          <rect x="3" y="6" width="25" height="2" rx="1" fill="#6B7280"/>
-          <rect x="3" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
-          <rect x="22" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
-          <rect x="41" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
-          <rect x="60" y="14" width="17" height="10" rx="2" fill="#1E3A5F"/>
-          <circle cx="18" cy="38" r="10" fill="none" stroke="#1F2937" stroke-width="4"/>
-          <circle cx="18" cy="38" r="10" fill="none" stroke="#3B82F6" stroke-width="4" stroke-dasharray="32 31" stroke-dashoffset="-6"/>
-          <circle cx="18" cy="38" r="10" fill="none" stroke="#10B981" stroke-width="4" stroke-dasharray="20 43" stroke-dashoffset="-38"/>
-          <rect x="32" y="28" width="45" height="3" rx="1" fill="#374151"/>
-          <rect x="32" y="33" width="38" height="3" rx="1" fill="#374151"/>
-          <rect x="32" y="40" width="45" height="8" rx="2" fill="#1E3A5F" opacity="0.6"/>
-          <rect x="34" y="42" width="40" height="2" rx="1" fill="#93C5FD" opacity="0.5"/>
-          <rect x="34" y="45" width="30" height="2" rx="1" fill="#6B7280" opacity="0.5"/>
-        </svg>""",
-    }
+          <rect x="3" y="3" width="14" height="6" rx="1" fill="{accent}33"/>
+          <rect x="3" y="12" width="17" height="13" rx="2" fill="#1E293B" stroke="{accent}" stroke-width="0.5"/>
+          <rect x="22" y="12" width="17" height="13" rx="2" fill="#1E293B" stroke="{accent}" stroke-width="0.5"/>
+          <rect x="41" y="12" width="17" height="13" rx="2" fill="#1E293B" stroke="{accent}" stroke-width="0.5"/>
+          <rect x="60" y="12" width="17" height="13" rx="2" fill="#1E293B" stroke="{accent}" stroke-width="0.5"/>
+          <polyline points="3,29 8,27 13,28 18,26 23,27" fill="none" stroke="{accent}" stroke-width="0.8" opacity="0.7"/>
+          <polyline points="22,29 27,27 32,28 37,26 42,27" fill="none" stroke="{accent}" stroke-width="0.8" opacity="0.7"/>
+          <rect x="3" y="29" width="74" height="1" rx="0" fill="#1F2937"/>
+          <rect x="3" y="32" width="74" height="8" rx="1" fill="#111827"/>
+          <rect x="5" y="34" width="20" height="4" rx="0" fill="{accent}44"/>
+          <rect x="27" y="35" width="15" height="2" rx="0" fill="{accent}33"/>
+          <rect x="44" y="36" width="10" height="1" rx="0" fill="{accent}22"/>
+          <rect x="3" y="43" width="74" height="5" rx="1" fill="#1E293B"/>
+        </svg>"""
 
-    tmpl_cols = st.columns(5, gap="small")
+        wf_dossier = f"""<svg viewBox="0 0 80 56" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="56" rx="3" fill="#0B1220"/>
+          <rect x="3" y="3" width="74" height="6" rx="1" fill="#1E293B"/>
+          <rect x="3" y="3" width="14" height="6" rx="1" fill="{accent}33"/>
+          <rect x="3" y="12" width="13" height="7" rx="1" fill="#1E293B" stroke="{accent}55" stroke-width="0.5"/>
+          <rect x="18" y="12" width="13" height="7" rx="1" fill="#1E293B" stroke="{accent}55" stroke-width="0.5"/>
+          <rect x="33" y="12" width="13" height="7" rx="1" fill="#1E293B" stroke="{accent}55" stroke-width="0.5"/>
+          <rect x="48" y="12" width="13" height="7" rx="1" fill="#1E293B" stroke="{accent}55" stroke-width="0.5"/>
+          <rect x="63" y="12" width="14" height="7" rx="1" fill="#1E293B" stroke="{accent}55" stroke-width="0.5"/>
+          <rect x="3" y="22" width="36" height="13" rx="1" fill="#111827"/>
+          <polyline points="5,33 10,31 15,32 20,29 25,30 30,27 35,29 39,27" fill="none" stroke="{accent}" stroke-width="1"/>
+          <rect x="41" y="22" width="36" height="13" rx="1" fill="#111827"/>
+          <rect x="43" y="30" width="6" height="4" rx="0" fill="{accent}99"/>
+          <rect x="51" y="27" width="6" height="7" rx="0" fill="{accent}77"/>
+          <rect x="59" y="25" width="6" height="9" rx="0" fill="{accent}55"/>
+          <rect x="67" y="29" width="6" height="5" rx="0" fill="{accent}44"/>
+          <rect x="3" y="37" width="36" height="11" rx="1" fill="#111827"/>
+          <circle cx="18" cy="42" r="5" fill="none" stroke="{accent}" stroke-width="2.5"/>
+          <rect x="41" y="37" width="36" height="11" rx="1" fill="#111827"/>
+          <rect x="43" y="42" width="6" height="5" rx="0" fill="#60A5FA88"/>
+          <rect x="51" y="44" width="4" height="3" rx="0" fill="{accent}99"/>
+          <rect x="57" y="40" width="4" height="7" rx="0" fill="{accent}66"/>
+          <rect x="63" y="43" width="4" height="4" rx="0" fill="#34D39988"/>
+          <rect x="69" y="42" width="4" height="5" rx="0" fill="#60A5FA66"/>
+        </svg>"""
+
+        wf_map = {"editorial": wf_editorial, "scorecard": wf_scorecard, "dossier": wf_dossier}
+        return wf_map.get(tk, wf_editorial)
+
+    # ── Render 3-column template picker ──────────────────────────────────── #
+    tmpl_cols = st.columns(3, gap="medium")
     for col, (tk, td) in zip(tmpl_cols, CARD_TEMPLATES.items()):
-        is_sel  = st.session_state.card_template == tk
+        is_sel      = st.session_state.card_template == tk
+        border_col  = "#F59E0B" if is_sel else "#374151"
+        bg_col      = "#0F172A"
+        thumb_html  = _tmpl_thumbnail_html(tk, td)
+        # Outer wrapper: fixed 200×120 viewport to contain the scaled-down card
+        thumb_wrapper = (
+            f'<div style="width:200px;height:120px;overflow:hidden;'
+            f'border-radius:6px;background:#0B1220;position:relative;">'
+            f'{thumb_html}'
+            f'</div>'
+        )
         col.markdown(
-            f'<div style="border:2px solid #374151;border-radius:10px;'
-            f'padding:8px 6px;text-align:center;background:#0F172A;margin-bottom:6px;">'
-            f'{_TMPL_WIREFRAMES[tk]}'
-            f'<div style="font-size:10px;font-weight:800;color:#E5E7EB;'
-            f'margin-top:6px;line-height:1.2;">{td["label"]}</div>'
-            f'<div style="font-size:8px;color:#6B7280;margin-top:3px;line-height:1.3;">'
+            f'<div style="border:2px solid {border_col};border-radius:10px;'
+            f'padding:8px 6px;text-align:center;background:{bg_col};margin-bottom:6px;">'
+            f'<div style="display:flex;justify-content:center;">{thumb_wrapper}</div>'
+            f'<div style="font-size:11px;font-weight:800;color:#E5E7EB;'
+            f'margin-top:8px;line-height:1.2;">{td["label"]}</div>'
+            f'<div style="font-size:9px;color:#94A3B8;margin-top:3px;line-height:1.3;">'
             f'{td["tagline"]}</div>'
+            f'<div style="font-size:8px;color:#6B7280;margin-top:2px;">'
+            f'Best for: {td["best_for"]}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
