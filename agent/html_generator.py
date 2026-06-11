@@ -621,29 +621,43 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
     accent      = role.get("accent_color", "#F59E0B")
     prim, kpis, all_drivers = _resolve_kpis(payload, role)
     role_kpis   = role.get("kpis", list(kpis.keys()))
-    show_kpis   = [k for k in role_kpis if k in kpis] or list(kpis.keys())[:6]
+    # Cap at 9 KPIs → renders as a clean 3-column grid without excess height
+    show_kpis   = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:9]
 
     d_labels, d_values = _donut_data(all_drivers)
     if not d_values:                                   # fallback: KPI value mix
         d_labels, d_values = _kpi_donut_fallback(kpis, show_kpis)
     has_donut = bool(d_values)
 
+    legend_html = ''.join(
+        f'<div style="display:flex;align-items:center;gap:6px;margin-top:6px">'
+        f'<div style="width:8px;height:8px;border-radius:50%;background:'
+        f'{[accent,"#34D399","#60A5FA","#F87171","#A78BFA"][i%5]}"></div>'
+        f'<div style="font-size:9px;color:{pal["subtext"]};white-space:nowrap;'
+        f'overflow:hidden;text-overflow:ellipsis;max-width:180px">{_e(l)}</div></div>'
+        for i, l in enumerate(d_labels)
+    ) if has_donut else ''
+
     return f"""
     <div class="card">
         {_block_masthead(payload, role, pal, accent)}
         {_block_headline(narrative, pal)}
         <div style="display:flex;gap:16px;flex:1">
-            <!-- KPI grid -->
+            <!-- KPI grid — max 9 tiles, 3-column wrap -->
             <div style="flex:1">
                 {_block_kpi_tiles(kpis, show_kpis, pal, accent)}
-                {_block_action(narrative, role, pal, accent)}
             </div>
-            <!-- Donut chart -->
-            <div style="flex:0 0 220px">
-                <div class="section-label">Contribution Mix</div>
-                {'<div class="chart-wrap" style="height:180px"><canvas id="donut1"></canvas></div>' if has_donut else '<div style="color:#64748B;font-size:10px">No driver data</div>'}
-                <!-- Legend -->
-                {''.join(f'<div style="display:flex;align-items:center;gap:6px;margin-top:6px"><div style="width:8px;height:8px;border-radius:50%;background:{[accent,"#34D399","#60A5FA","#F87171","#A78BFA"][i%5]}"></div><div style="font-size:9px;color:{pal["subtext"]};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">{_e(l)}</div></div>' for i,l in enumerate(d_labels)) if has_donut else ''}
+            <!-- Right column: donut + legend + action -->
+            <div style="flex:0 0 220px;display:flex;flex-direction:column;gap:12px">
+                <div>
+                    <div class="section-label">Contribution Mix</div>
+                    {'<div class="chart-wrap" style="height:180px"><canvas id="donut1"></canvas></div>' if has_donut else '<div style="color:#64748B;font-size:10px">No driver data</div>'}
+                    {legend_html}
+                </div>
+                <!-- Action block fills remaining space below donut -->
+                <div style="flex:1">
+                    {_block_action(narrative, role, pal, accent)}
+                </div>
             </div>
         </div>
         {_block_footer(narrative, accent, pal)}
