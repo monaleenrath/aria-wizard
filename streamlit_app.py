@@ -4912,8 +4912,23 @@ def _build_configs() -> tuple[str, str]:
                 else "alltime"   # custom date range → treat as full history
             ),
             "kpis": [
-                {"name": k["user_name"], "column": k.get("column", k["user_name"]),
-                 "agg": k["agg"], "format": k["format"]}
+                {
+                    "name":   k["user_name"],
+                    "column": k.get("column", k["user_name"]),
+                    "agg":    k["agg"],
+                    "format": k["format"],
+                    # Ratio KPIs need num_col/den_col/scale so metrics_engine can
+                    # compute the value and driver_analysis can decompose it.
+                    # Without these fields the agent silently skips ratio KPIs →
+                    # Profit Margin % = 0.0%, empty dimension breakdown charts.
+                    **({
+                        "num_col": k["num_col"],
+                        "den_col": k["den_col"],
+                        "den_agg": k.get("den_agg", "sum"),
+                        "scale":   k.get("scale", 1),
+                    } if k.get("agg") == "ratio" and k.get("num_col") and k.get("den_col")
+                    else {}),
+                }
                 for k in kpis_cfg
             ],
             "derived": [],
@@ -5269,6 +5284,7 @@ def step_export_go():
                 "agent/metrics_engine.py",
                 "agent/data_loader.py",
                 "agent/driver_analysis.py",
+                "agent/html_generator.py",
                 "agent/slack_publisher.py",
                 "agent/report_writer.py",
                 "agent/teams_publisher.py",
