@@ -2994,51 +2994,69 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     # Inject fluid CSS so the card fills the Streamlit iframe width instead of
     # overflowing at 900px.  In the PNG path Chrome's viewport IS 900px, so
     # width:100% still renders at exactly 900px — no change to Slack output.
-    # Cards are designed at 900px. Force body to that width so all templates
-    # (including editorial's fixed flex columns) render at their natural size.
+    # Give the card its design width (900px) regardless of the iframe viewport.
+    # min-width forces the card to lay out at full size; overflow is hidden so
+    # the horizontal scroll bar never appears.
     fluid_css = """<style>
-html { overflow-x: hidden; }
-body { margin: 0; padding: 0; width: 900px; transform-origin: top left; }
+html, body { margin: 0; padding: 0; overflow: hidden; }
+.card { min-width: 900px !important; }
 </style>"""
     html = html.replace('</head>', fluid_css + '\n</head>')
 
-    # Scale-to-fit + auto-height script:
-    # • Body is set to 900px (the card's design width) so all internal layouts
-    #   render correctly — editorial 3-column, scorecard grid, etc.
-    # • If the iframe viewport is narrower than 900px, we scale the whole body
-    #   down proportionally. No cropping, no reflow for any template.
-    # • The scaled height is reported to Streamlit via postMessage so the
-    #   iframe snaps to exactly the right height with no empty space.
+    # Scale-to-fit + exact-height script
+    # ─────────────────────────────────────────────────────────────────────────
+    # Strategy:
+    #   1. `.card { min-width:900px }` forces the card to render at its full
+    #      900px design width, so all internal layouts (editorial 3-column,
+    #      scorecard grid, etc.) look exactly as designed.
+    #   2. JS measures card.offsetWidth (≥900) and card.offsetHeight (natural).
+    #   3. scale = viewport_width / card_width  (≤1, so never enlarges).
+    #   4. card.style.transform = scale() — scales visually, no layout reflow.
+    #   5. document.body.style.height = scaledH — collapses body layout to the
+    #      VISUAL height so the iframe receives the correct value via postMessage.
+    #   6. postMessage fires Streamlit's iframe resize.
+    # ─────────────────────────────────────────────────────────────────────────
     fit_and_resize_script = """
 <script>
 (function fitAndResize() {
-    var DESIGN_W = 900;
 
     function apply() {
-        var vw = window.innerWidth || document.documentElement.clientWidth;
-        // Only scale down; never enlarge
-        var scale = (vw > 0 && vw < DESIGN_W) ? vw / DESIGN_W : 1;
+        // Find the outermost card element across all 5 templates
+        var card = document.querySelector('.card')
+                || document.querySelector('[class*="card"]')
+                || document.body.firstElementChild;
+        if (!card) return;
 
+        // ── 1. Reset any previous transform so we measure natural size ──────
+        card.style.transform      = '';
+        card.style.transformOrigin = 'top left';
+
+        // ── 2. Natural dimensions (card is min 900px wide) ─────────────────
+        var naturalW = card.offsetWidth  || 900;
+        var naturalH = card.offsetHeight || card.scrollHeight;
+        var vw       = window.innerWidth || document.documentElement.clientWidth;
+
+        // ── 3. Scale down only when viewport is narrower than the card ──────
+        var scale = (vw > 0 && naturalW > vw) ? vw / naturalW : 1;
+
+        // ── 4. Apply proportional scale transform to the card ───────────────
         if (scale < 1) {
-            document.body.style.transform = 'scale(' + scale + ')';
-        } else {
-            document.body.style.transform = '';
+            card.style.transform = 'scale(' + scale + ')';
         }
 
-        // Measure the body's natural (pre-scale) height, then scale it
-        var naturalH = Math.max(
-            document.body.scrollHeight,
-            document.body.offsetHeight
-        );
+        // ── 5. Collapse body to visual height so Streamlit gets right value ─
         var scaledH = Math.ceil(naturalH * scale);
+        document.body.style.height   = scaledH + 'px';
+        document.body.style.overflow = 'hidden';
 
+        // ── 6. Tell Streamlit to resize the iframe ───────────────────────────
         window.parent.postMessage(
-            { type: 'streamlit:setFrameHeight', height: scaledH + 16 },
+            { type: 'streamlit:setFrameHeight', height: scaledH + 24 },
             '*'
         );
     }
 
-    // Fire after Chart.js finishes (two passes for safety)
+    // Fire after Chart.js finishes rendering (two passes for safety)
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', function() {
             setTimeout(apply, 400);
@@ -4667,9 +4685,11 @@ def step_preview_card():
 
         if svg:
             # svg is now a full self-contained HTML string from html_generator.
-            # Initial height is 700; the postMessage resize script inside the
-            # HTML adjusts it to the card's actual rendered height automatically.
-            components.html(svg, height=700, scrolling=False)
+            # Start small (100px) so Streamlit doesn't hold a 700px floor.
+            # The fitAndResize script inside the HTML reports the card's true
+            # scaled height via postMessage, and Streamlit resizes the iframe
+            # up to exactly the right value — no empty space below.
+            components.html(svg, height=100, scrolling=False)
         else:
             st.warning(
                 "Card preview unavailable — check agent/html_generator.py is present.",
