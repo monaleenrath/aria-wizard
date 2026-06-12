@@ -1,5 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v3: 3-template redesign)
+ARIA_DEPLOY_VERSION = "2026-06-11-v3"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -1184,7 +1185,14 @@ function ariaFilter(sel) {{
     # ── Build full HTML ──────────────────────────────────────────────────── #
     body = tmpl_fn(narrative, payload, role, pal)
 
+    # Diagnostic summary embedded as HTML comment for deployment verification
+    _diag = (f"all_drivers={len(all_drivers)} "
+             f"dim_gs_keys={list(dim_gs.keys())} "
+             f"first_dim={first_dim} "
+             f"tmpl={tmpl_key}")
+
     return f"""<!DOCTYPE html>
+<!-- ARIA_DEPLOY_VERSION=2026-06-11-v3 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
