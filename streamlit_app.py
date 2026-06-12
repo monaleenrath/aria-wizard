@@ -4921,6 +4921,15 @@ def _build_configs() -> tuple[str, str]:
                 return 4
             return 3
         dim_cols = sorted(_raw_dims, key=_dim_priority)[:6]
+        # Safety fallback: if the priority filter produced nothing (all cols excluded),
+        # grab any object column that isn't date_col or a KPI column.
+        if not dim_cols:
+            dim_cols = [
+                c for c in df.columns
+                if c != date_col
+                and c not in kpi_cols
+                and df[c].dtype == object
+            ][:6]
     else:
         dim_cols = ["Category", "Region", "Segment"]
 
