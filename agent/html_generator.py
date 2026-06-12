@@ -1,6 +1,6 @@
 """
-html_generator.py  —  ARIA Briefing Cards  (v4: drivers_dod fallback + richer diagnostics)
-ARIA_DEPLOY_VERSION = "2026-06-11-v4"   # bump this on every push so you can verify deployment
+html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
+ARIA_DEPLOY_VERSION = "2026-06-11-v5"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -1209,7 +1209,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-11-v4 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-11-v5 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
