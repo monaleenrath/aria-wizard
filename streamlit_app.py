@@ -1878,17 +1878,17 @@ def _pick_gemini_model(api_key: str) -> str | None:
     that supports generateContent. Returns model id string or None.
     """
     import requests as _rq
-    # Free-tier models first — never pick a paid model when a free one is available
+    # Free-tier models first — ordered by current (Jun 2026) availability.
+    # gemini-2.0-flash-lite removed: quota limit:0 on new free-tier keys.
     PREFERRED = [
+        "gemini-2.5-flash",        # free tier, current best (Jun 2026)
+        "gemini-2.0-flash",        # free tier fallback
         "gemini-1.5-flash",        # free tier, 15 RPM
         "gemini-1.5-flash-8b",     # free tier, smaller/faster
-        "gemini-1.5-flash-001",    # free tier pinned version
-        "gemini-1.5-flash-002",    # free tier pinned version
-        "gemini-2.0-flash-lite",   # free tier (new)
+        "gemini-1.5-flash-002",    # free tier pinned
+        "gemini-1.5-flash-001",    # free tier pinned
         "gemini-1.5-pro",          # free tier (limited)
-        "gemini-1.5-pro-001",
-        "gemini-2.0-flash",        # requires billing — last resort
-        "gemini-pro",
+        "gemini-pro",              # last resort
     ]
     try:
         r = _rq.get(
@@ -4150,6 +4150,9 @@ def step_choose_ai():
         kv = st.text_input("Paste key here (stored as a GitHub Secret, not locally)",
                             type="password", placeholder="Paste your Gemini API key here", key="gemini_key_input")
         if kv:
+            # If the key changed, wipe KPI cache so Step 4 retries Gemini fresh
+            if kv != st.session_state.get("gemini_key", ""):
+                _clear_kpi_cache()
             st.session_state.gemini_key = kv
         if not st.session_state.get("gemini_key") and not kv:
             st.caption("👆 Paste your Gemini key above to continue.")
@@ -5114,13 +5117,19 @@ def step_export_go():
         )
         style_lbl    = CARD_STYLES.get(style_key, {}).get("label", style_key)
         template_lbl = CARD_TEMPLATES.get(template_key, {}).get("label", template_key)
+        _sched_type = st.session_state.get("schedule_type", "daily")
+        _sched_badge = (
+            f"⚡ One-time"
+            if _sched_type == "onetime"
+            else f"⏰ {del_hour}:00 {tz}"
+        )
         st.markdown(
             f'<div style="background:#F59E0B18;border:1px solid #F59E0B40;border-radius:10px;'
             f'padding:14px 20px;margin-bottom:16px;font-size:13px;line-height:2">'
             f'📊 <b>{len(kpis_cfg)} KPIs</b> &nbsp;·&nbsp; '
             f'👤 <b>{role_name}</b> &nbsp;·&nbsp; '
             f'🎨 <b>{style_lbl} · {template_lbl}</b> &nbsp;·&nbsp; '
-            f'⏰ <b>{del_hour}:00 {tz}</b> &nbsp;·&nbsp; '
+            f'<b>{_sched_badge}</b> &nbsp;·&nbsp; '
             f'📬 <b>{", ".join(channels) or "File"}</b>'
             f'</div>',
             unsafe_allow_html=True,
