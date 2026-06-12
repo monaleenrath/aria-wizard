@@ -1210,8 +1210,11 @@ function ariaEdDim(pill) {{
         bar_id    = "sc_dimbar" if tmpl_key == "scorecard" else "ds_dimbar"
         title_id  = "sc-dim-title" if tmpl_key == "scorecard" else "ds-dim-title"
         accent_e  = accent
+        palette_js = json.dumps(_PALETTE8)
         filter_js = f"""
-var ARIA_DIM_DATA = {dim_data_json};
+var ARIA_ACCENT    = '{accent_e}';
+var ARIA_PALETTE   = {palette_js};
+var ARIA_DIM_DATA  = {dim_data_json};
 function ariaFilter(sel) {{
     var dim = sel.getAttribute('data-dim');
     var val = sel.value;
@@ -1219,17 +1222,33 @@ function ariaFilter(sel) {{
     if (!d) return;
     var chart = ARIA_CHARTS['{bar_id}'];
     if (chart) {{
+        // Switch chart to the selected dimension
         chart.data.labels = d.labels;
         chart.data.datasets[0].data = d.values;
+
+        // Highlight the selected member; dim the rest
+        if (val === 'All') {{
+            chart.data.datasets[0].backgroundColor =
+                d.labels.map(function(l, i) {{ return ARIA_PALETTE[i % ARIA_PALETTE.length]; }});
+        }} else {{
+            chart.data.datasets[0].backgroundColor =
+                d.labels.map(function(l) {{
+                    return (l === val) ? ARIA_ACCENT : ARIA_ACCENT + '28';
+                }});
+        }}
         chart.update('none');
+
         var t = document.getElementById('{title_id}');
-        if (t) t.textContent = dim + ' Breakdown' + (val !== 'All' ? ' • '+val : '');
+        if (t) t.textContent = dim + ' Breakdown' + (val !== 'All' ? ' • ' + val : '');
     }}
-    // Show active filter chip
-    document.querySelectorAll('.filter-chip').forEach(function(c){{c.style.display='none';}});
+
+    // Update filter chip for THIS dropdown only (remove old, add new)
+    var existingChip = sel.parentNode.querySelector('.filter-chip[data-dim="' + dim + '"]');
+    if (existingChip) existingChip.remove();
     if (val !== 'All') {{
-        var chip = document.createElement('div');
+        var chip = document.createElement('span');
         chip.className = 'filter-chip';
+        chip.setAttribute('data-dim', dim);
         chip.style.display = 'inline-block';
         chip.textContent = dim + ': ' + val;
         sel.parentNode.insertBefore(chip, sel.nextSibling);
@@ -1275,7 +1294,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-12-v11 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-12-v12 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
