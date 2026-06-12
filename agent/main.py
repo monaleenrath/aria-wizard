@@ -27,7 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.data_loader import load_data
 from agent.metrics_engine import compute_metrics
-from agent.driver_analysis import analyze_drivers, drivers_to_dict
+try:
+    from agent.driver_analysis import analyze_drivers, drivers_to_dict, DRIVER_ANALYSIS_VERSION
+except ImportError:
+    # Backwards-compatible: old driver_analysis.py doesn't export the version constant
+    from agent.driver_analysis import analyze_drivers, drivers_to_dict
+    DRIVER_ANALYSIS_VERSION = "MISSING-pre-v2-no-autodetect"
 from agent.narrative_generator import generate_narrative
 from agent.report_writer import write_markdown, write_docx
 from agent.slack_publisher import post_image_to_slack, post_to_slack, render_slack_preview
@@ -100,7 +105,9 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
     import datetime as _dt
     ref = _dt.date.fromisoformat(snapshot.reference_date)
 
-    drivers_yoy = analyze_drivers(df, config, ref, compare_to="yoy")
+    _yoy_diag: dict = {}
+    drivers_yoy = analyze_drivers(df, config, ref, compare_to="yoy",
+                                  _diag_out=_yoy_diag)
     drivers_dod = analyze_drivers(df, config, ref, compare_to="dod")
 
     log.info("drivers_yoy summary: %s",
@@ -143,6 +150,27 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         "drivers": drivers_to_dict(drivers_yoy),
         "drivers_dod": drivers_to_dict(drivers_dod),
         "daily_sales_30d": daily_sales_30d,
+        "_aria_debug": {
+            "da_ver": DRIVER_ANALYSIS_VERSION,
+            "cfg_dims": config.get("drivers", {}).get("dimensions", []),
+            "df_cols": list(df.columns),
+            "df_shape": [int(df.shape[0]), int(df.shape[1])],
+            "kpi_map": [
+                (k.get("name"), k.get("column", "?"),
+                 k.get("agg", "?"), k.get("num_col", ""))
+                for k in config.get("metrics", {}).get("kpis", [])
+            ],
+            "yoy_summary": {k: len(v) for k, v in drivers_yoy.items()},
+            "yoy_diag": _yoy_diag,
+            # For debugging auto-detect: dtype of every low-cardinality non-KPI column
+            "df_cat_cols": {
+                c: f"{df[c].dtype}/{df[c].nunique()}"
+                for c in df.columns
+                if c != config["data"]["date_column"]
+                and df[c].nunique() < 50
+                and c not in _kpi_columns
+            },
+        },
     }
 
     # 5 — PERSIST raw payload (shared across all roles) ─────────────────── #
