@@ -1,6 +1,6 @@
 """
-html_generator.py  —  ARIA Briefing Cards  (v3: 3-template redesign)
-ARIA_DEPLOY_VERSION = "2026-06-11-v3"   # bump this on every push so you can verify deployment
+html_generator.py  —  ARIA Briefing Cards  (v4: drivers_dod fallback + richer diagnostics)
+ARIA_DEPLOY_VERSION = "2026-06-11-v4"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -144,13 +144,22 @@ def _resolve_kpis(payload: dict, role: dict):
     prim = role.get("primary_kpi")
     if not prim or prim not in kpis:
         prim = next(iter(kpis), "—")
-    drivers_dict = payload.get("drivers", {})
-    all_drivers  = drivers_dict.get(prim) or []
-    if not all_drivers:
-        for v in drivers_dict.values():
-            if v:
-                all_drivers = v
-                break
+
+    # Try YoY drivers first; fall back to DoD drivers if YoY is empty.
+    # This ensures the bar chart renders even when the YoY window has no
+    # prior-year data (e.g. dataset only covers one year) or when all KPI
+    # column names in config.yaml don't match the dataframe.
+    for drivers_key in ("drivers", "drivers_dod"):
+        drivers_dict = payload.get(drivers_key, {})
+        all_drivers  = drivers_dict.get(prim) or []
+        if not all_drivers:
+            for v in drivers_dict.values():
+                if v:
+                    all_drivers = v
+                    break
+        if all_drivers:
+            break
+
     return prim, kpis, all_drivers
 
 
@@ -1186,13 +1195,21 @@ function ariaFilter(sel) {{
     body = tmpl_fn(narrative, payload, role, pal)
 
     # Diagnostic summary embedded as HTML comment for deployment verification
-    _diag = (f"all_drivers={len(all_drivers)} "
-             f"dim_gs_keys={list(dim_gs.keys())} "
-             f"first_dim={first_dim} "
-             f"tmpl={tmpl_key}")
+    _drv_yoy = payload.get("drivers", {})
+    _drv_dod = payload.get("drivers_dod", {})
+    _diag = (
+        f"all_drivers={len(all_drivers)} "
+        f"dim_gs_keys={list(dim_gs.keys())} "
+        f"first_dim={first_dim} "
+        f"tmpl={tmpl_key} | "
+        f"yoy_keys={list(_drv_yoy.keys())} "
+        f"yoy_lens={[len(v) for v in _drv_yoy.values()]} | "
+        f"dod_keys={list(_drv_dod.keys())} "
+        f"dod_lens={[len(v) for v in _drv_dod.values()]}"
+    )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-11-v3 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-11-v4 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
