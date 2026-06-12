@@ -10,9 +10,14 @@ For each dimension and each KPI it returns:
   - Top contributors  (biggest absolute positive change)
   - Top detractors    (biggest absolute negative change)
   - Contribution %    (share of the total delta)
+
+v2: auto-detect dims when config dims are absent/empty from the loaded df.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # must be first statement after docstring
+
+# Surfaced in payload["_aria_debug"]["da_ver"] — bump when auto-detect logic changes.
+DRIVER_ANALYSIS_VERSION = "2026-06-12-v3-robust-autodetect"
 
 from dataclasses import dataclass, asdict
 from datetime import date, timedelta
@@ -77,6 +82,7 @@ def analyze_drivers(
     reference_date: date,
     compare_to: str = "yoy",
     top_n: Optional[int] = None,
+    _diag_out: Optional[dict] = None,   # if provided, populated with internal state
 ) -> Dict[str, List[DriverItem]]:
     """
     Decompose KPI deltas across dimensions.
@@ -107,16 +113,27 @@ def analyze_drivers(
 
     dims = [d for d in _cfg_dims if d in df.columns]
     if not dims:
-        # Auto-detect: string columns, <50 unique values, not date-like, not KPI
-        dims = [
-            c for c in df.columns
-            if c != date_col
-            and c != "_date"
-            and c not in _kpi_cols
-            and df[c].dtype == object
-            and not any(kw in c.lower() for kw in _date_like)
-            and df[c].nunique() < 50
-        ][:6]
+        # Auto-detect: categorical-like columns (object OR category dtype, handles
+        # Google Sheets CSV loads where pandas may infer category instead of object),
+        # <50 unique values, not date-derived column names, not KPI columns.
+        # Uses pd.api.types so it is robust across pandas versions and data sources.
+        _exclude = _kpi_cols | {date_col, "_date"}
+        _candidates = []
+        for _c in df.columns:
+            if _c in _exclude:
+                continue
+            if any(_kw in _c.lower() for _kw in _date_like):
+                continue
+            if pd.api.types.is_numeric_dtype(df[_c]):
+                continue
+            if pd.api.types.is_datetime64_any_dtype(df[_c]):
+                continue
+            _n = int(df[_c].nunique())
+            if 1 < _n < 50:
+                _candidates.append((_n, _c))
+        # Sort by cardinality ascending so highest-signal dims come first
+        _candidates.sort(key=lambda x: x[0])
+        dims = [_c for _, _c in _candidates][:6]
 
     import logging as _log
     _logger = _log.getLogger("agent.driver_analysis")
@@ -180,6 +197,28 @@ def analyze_drivers(
         _cfg_dims, dims,
         kpis_to_decompose, len(curr_df), len(prior_df),
     )
+
+    # Populate optional diagnostic dict so callers can surface this in HTML comments
+    if _diag_out is not None:
+        _diag_out["effective_dims"]     = list(dims)
+        _diag_out["kpis_to_decompose"]  = list(kpis_to_decompose)
+        _diag_out["curr_start"]         = str(curr_start)
+        _diag_out["prior_start"]        = str(prior_start)
+        _diag_out["prior_end"]          = str(prior_end)
+        _diag_out["curr_df_len"]        = int(len(curr_df))
+        _diag_out["prior_df_len"]       = int(len(prior_df))
+        # Spot-check: for first KPI + first dim, what does _agg return?
+        if kpis_to_decompose and dims:
+            _sk = kpis_to_decompose[0]
+            _sd = dims[0]
+            _sc = kpi_cfgs.get(_sk)
+            _sagg = _agg(curr_df, _sd, _sk, _sc)
+            _diag_out["spot_kpi"]  = _sk
+            _diag_out["spot_dim"]  = _sd
+            _diag_out["spot_cfg"]  = {k: v for k, v in (_sc or {}).items()
+                                      if k in ("column", "agg", "num_col")}
+            _diag_out["spot_agg_len"] = int(len(_sagg))
+            _diag_out["spot_agg_sample"] = list(_sagg.head(3).to_dict().items())
 
     results: Dict[str, List[DriverItem]] = {}
 
