@@ -437,6 +437,18 @@ canvas     {{ display:block; }}
 .ed-body     {{ font-size:11px; color:{pal['subtext']}; line-height:1.65;
                 font-family:Georgia,serif; }}
 .ed-stat-row {{ display:flex; flex-wrap:wrap; gap:5px; margin:10px 0 6px; }}
+
+/* ─ Editorial dimension pills ───────────────── */
+.ed-dim-pill {{
+    font-size:7px; font-weight:700; letter-spacing:1px;
+    text-transform:uppercase; background:transparent;
+    border:1px solid {pal['border']}; color:{pal['muted']};
+    border-radius:10px; padding:2px 8px; cursor:pointer;
+    font-family:inherit; transition:all 0.15s;
+}}
+.ed-dim-pill-active, .ed-dim-pill:hover {{
+    background:{accent}20; border-color:{accent}80; color:{accent};
+}}
 """
 
 
@@ -493,7 +505,7 @@ def _chart_bar_h(cid: str, labels: list, values: list, accent: str, pal: dict) -
     lj = json.dumps(labels); vj = json.dumps(values); cj = json.dumps(colors)
     tc = pal["muted"]
     return f"""
-    new Chart(document.getElementById('{cid}'), {{
+    ARIA_CHARTS['{cid}'] = new Chart(document.getElementById('{cid}'), {{
         type:'bar',
         data:{{ labels:{lj}, datasets:[{{ data:{vj},
             backgroundColor:{cj}, borderRadius:3, borderWidth:0 }}] }},
@@ -857,18 +869,34 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
                      f'<div style="font-size:8px;font-weight:600;color:{smc}">{_e(sm)} MoM</div>'
                      f'</div>')
 
-    # Dimension bar chart
-    dim_gs   = _dim_groups(all_drivers, 1, 8)
+    # Dimension bar chart — up to 4 switchable dimensions
+    dim_gs    = _dim_groups(all_drivers, 4, 8)
     first_dim = next(iter(dim_gs), None)
     bar_html  = ""
     if first_dim:
-        d    = dim_gs[first_dim]
-        n    = len(d["labels"])
-        h    = min(max(n * 28 + 20, 80), 200)
-        bar_html = (f'<div class="sec" style="margin-top:12px">'
-                    f'{_e(first_dim)} Breakdown</div>'
-                    f'<div class="chart-box" style="height:{h}px">'
-                    f'<canvas id="ed_bar"></canvas></div>')
+        d = dim_gs[first_dim]
+        n = len(d["labels"])
+        h = min(max(n * 28 + 20, 80), 220)
+        # Pill selector — one pill per detected dimension
+        _accent = accent
+        _pills = ""
+        for _i, _dk in enumerate(dim_gs.keys()):
+            _active = "ed-dim-pill-active" if _i == 0 else ""
+            _pills += (f'<button class="ed-dim-pill {_active}" '
+                       f'data-dim="{_e(_dk)}" '
+                       f'onclick="ariaEdDim(this)" '
+                       f'style="--ed-accent:{_accent}">'
+                       f'{_e(_dk)}</button> ')
+        bar_html = (
+            f'<div style="display:flex;align-items:center;justify-content:space-between;'
+            f'flex-wrap:wrap;gap:4px;margin-top:10px;margin-bottom:6px">'
+            f'<span id="ed-dim-title" class="sec" style="margin-bottom:0">'
+            f'{_e(first_dim)} Breakdown</span>'
+            f'<div style="display:flex;flex-wrap:wrap;gap:3px">{_pills}</div>'
+            f'</div>'
+            f'<div class="chart-box" style="height:{h}px">'
+            f'<canvas id="ed_bar"></canvas></div>'
+        )
 
     return f"""
 <div class="card">
@@ -1160,7 +1188,25 @@ def generate_html_card(narrative, payload: dict, _config: dict,
     # ── Interactive filter JS ────────────────────────────────────────────── #
     dim_data_json = json.dumps({d: dim_gs[d] for d in dim_gs})
     filter_js = ""
-    if tmpl_key in ("scorecard", "dossier"):
+    if tmpl_key == "editorial" and first_dim:
+        filter_js = f"""
+var ARIA_DIM_DATA = {dim_data_json};
+function ariaEdDim(pill) {{
+    var dim = pill.getAttribute('data-dim');
+    var d   = ARIA_DIM_DATA[dim];
+    if (!d) return;
+    var chart = ARIA_CHARTS['ed_bar'];
+    if (!chart) return;
+    chart.data.labels               = d.labels;
+    chart.data.datasets[0].data     = d.values;
+    chart.update('none');
+    var t = document.getElementById('ed-dim-title');
+    if (t) t.textContent = dim + ' Breakdown';
+    document.querySelectorAll('.ed-dim-pill').forEach(function(p) {{
+        p.classList.toggle('ed-dim-pill-active', p.getAttribute('data-dim') === dim);
+    }});
+}}"""
+    elif tmpl_key in ("scorecard", "dossier"):
         bar_id    = "sc_dimbar" if tmpl_key == "scorecard" else "ds_dimbar"
         title_id  = "sc-dim-title" if tmpl_key == "scorecard" else "ds-dim-title"
         accent_e  = accent
@@ -1197,6 +1243,8 @@ function ariaFilter(sel) {{
     # Diagnostic summary embedded as HTML comment for deployment verification
     _drv_yoy = payload.get("drivers", {})
     _drv_dod = payload.get("drivers_dod", {})
+    _dbg     = payload.get("_aria_debug", {})
+    _yd = _dbg.get("yoy_diag", {})
     _diag = (
         f"all_drivers={len(all_drivers)} "
         f"dim_gs_keys={list(dim_gs.keys())} "
@@ -1205,11 +1253,29 @@ function ariaFilter(sel) {{
         f"yoy_keys={list(_drv_yoy.keys())} "
         f"yoy_lens={[len(v) for v in _drv_yoy.values()]} | "
         f"dod_keys={list(_drv_dod.keys())} "
-        f"dod_lens={[len(v) for v in _drv_dod.values()]}"
+        f"dod_lens={[len(v) for v in _drv_dod.values()]} | "
+        f"da_ver={_dbg.get('da_ver','UNKNOWN')} | "
+        f"cfg_dims={_dbg.get('cfg_dims',[])} | "
+        f"df_shape={_dbg.get('df_shape',[])} | "
+        f"kpi_map={_dbg.get('kpi_map',[])} | "
+        f"yoy_summary={_dbg.get('yoy_summary',{})} | "
+        f"yoy_diag.effective_dims={_yd.get('effective_dims','MISSING')} | "
+        f"yoy_diag.kpis={_yd.get('kpis_to_decompose','MISSING')} | "
+        f"yoy_diag.curr_start={_yd.get('curr_start','?')} "
+        f"yoy_diag.prior_start={_yd.get('prior_start','?')} "
+        f"yoy_diag.prior_end={_yd.get('prior_end','?')} | "
+        f"yoy_diag.curr_df_len={_yd.get('curr_df_len','?')} "
+        f"yoy_diag.prior_df_len={_yd.get('prior_df_len','?')} | "
+        f"yoy_diag.spot_kpi={_yd.get('spot_kpi','?')} "
+        f"yoy_diag.spot_dim={_yd.get('spot_dim','?')} "
+        f"yoy_diag.spot_cfg={_yd.get('spot_cfg','?')} "
+        f"yoy_diag.spot_agg_len={_yd.get('spot_agg_len','?')} "
+        f"yoy_diag.spot_agg_sample={_yd.get('spot_agg_sample','?')} | "
+        f"df_cat_cols={_dbg.get('df_cat_cols',{})}"
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-11-v5 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-12-v11 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
