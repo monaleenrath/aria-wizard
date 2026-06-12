@@ -86,13 +86,40 @@ def analyze_drivers(
 
     compare_to : 'dod' | 'wow' | 'mom' | 'yoy'
     """
-    dims     = config["drivers"]["dimensions"]
+    _cfg_dims = config["drivers"]["dimensions"]
     top_n    = top_n or config["drivers"].get("top_n", 3)
     date_col = config["data"]["date_column"]
     timeframe = config.get("metrics", {}).get("timeframe", "1d")
 
     df = df.copy()
     df["_date"] = pd.to_datetime(df[date_col]).dt.date
+
+    # ── Resolve effective dimension list ─────────────────────────────────────── #
+    # Keep only config dims that actually exist in df.  If none survive (e.g.
+    # the wizard detected dims from a different dataset than what GitHub Actions
+    # loads), auto-detect object columns with <50 unique values from df itself.
+    # This makes the driver breakdown chart resilient to config/data mismatches.
+    _date_like = {"date", "time", "year", "month", "quarter", "week", "day"}
+    _kpi_cols  = set()
+    for k in config.get("metrics", {}).get("kpis", []):
+        for f in ("column", "num_col", "den_col"):
+            if k.get(f): _kpi_cols.add(k[f])
+
+    dims = [d for d in _cfg_dims if d in df.columns]
+    if not dims:
+        # Auto-detect: string columns, <50 unique values, not date-like, not KPI
+        dims = [
+            c for c in df.columns
+            if c != date_col
+            and c != "_date"
+            and c not in _kpi_cols
+            and df[c].dtype == object
+            and not any(kw in c.lower() for kw in _date_like)
+            and df[c].nunique() < 50
+        ][:6]
+
+    import logging as _log
+    _logger = _log.getLogger("agent.driver_analysis")
 
     # ── Current window (mirrors metrics_engine logic) ─────────────────────── #
     curr_start = _compute_start_date(reference_date, timeframe)
@@ -116,9 +143,6 @@ def analyze_drivers(
 
     curr_df  = df[(df["_date"] >= curr_start)  & (df["_date"] <= reference_date)]
     prior_df = df[(df["_date"] >= prior_start) & (df["_date"] <= prior_end)]
-
-    import logging as _log
-    _logger = _log.getLogger("agent.driver_analysis")
 
     # Build a lookup from KPI name → config dict
     kpi_cfgs = {k["name"]: k for k in config.get("metrics", {}).get("kpis", [])}
@@ -149,9 +173,11 @@ def analyze_drivers(
     ]
 
     _logger.info(
-        "analyze_drivers | ref=%s compare=%s timeframe=%s | dims=%s | "
+        "analyze_drivers | ref=%s compare=%s timeframe=%s | "
+        "cfg_dims=%s | effective_dims=%s | "
         "kpis_to_decompose=%s | curr_df=%d rows | prior_df=%d rows",
-        reference_date, compare_to, timeframe, dims,
+        reference_date, compare_to, timeframe,
+        _cfg_dims, dims,
         kpis_to_decompose, len(curr_df), len(prior_df),
     )
 
