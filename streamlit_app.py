@@ -2404,13 +2404,26 @@ def compute_preview_metrics_v2(
                 {k.get("num_col") for k in kpis_cfg if k.get("num_col")} | \
                 {k.get("den_col") for k in kpis_cfg if k.get("den_col")}
     date_like = {"date", "time", "year", "month", "quarter", "week", "day"}
-    dim_cols  = [
+    _raw_dims_p = [
         c for c in df.columns
         if c not in kpi_cols and c != date_col
         and df[c].dtype == object
         and not any(d in c.lower() for d in date_like)
         and df[c].nunique() < 50
-    ][:6] or ["Category", "Region", "Segment"]
+    ]
+    def _dim_priority_p(col: str) -> int:
+        c = col.lower()
+        if any(k in c for k in ("category", "segment", "type", "channel", "brand", "product")):
+            return 0
+        if any(k in c for k in ("region", "province", "state", "city", "country", "area", "zone")):
+            return 1
+        if any(k in c for k in ("name",)) and not any(k in c for k in ("id", "code", "num")):
+            return 2
+        if any(k in c for k in ("id", "code", "number", "num", "flag", "key")):
+            return 4
+        return 3
+    dim_cols = (sorted(_raw_dims_p, key=_dim_priority_p)[:6]
+                or ["Category", "Region", "Segment"])
 
     config = {
         "data": {
@@ -4885,14 +4898,29 @@ def _build_configs() -> tuple[str, str]:
         kpi_cols |= {k.get("num_col") for k in kpis_cfg if k.get("num_col")}
         kpi_cols |= {k.get("den_col") for k in kpis_cfg if k.get("den_col")}
         date_like = {"date", "time", "year", "month", "quarter", "week", "day"}
-        dim_cols  = [
+        _raw_dims = [
             c for c in df.columns
             if c not in kpi_cols
             and c != date_col
             and df[c].dtype == object
             and not any(d in c.lower() for d in date_like)
             and df[c].nunique() < 50
-        ][:6]  # cap at 6 dimensions
+        ]
+        # Sort so business-category dims come first (best for bar chart),
+        # geographic dims second, store-name dims third, IDs/codes last.
+        # This ensures the first dimension shown is always the most meaningful.
+        def _dim_priority(col: str) -> int:
+            c = col.lower()
+            if any(k in c for k in ("category", "segment", "type", "channel", "brand", "product")):
+                return 0
+            if any(k in c for k in ("region", "province", "state", "city", "country", "area", "zone")):
+                return 1
+            if any(k in c for k in ("name",)) and not any(k in c for k in ("id", "code", "num")):
+                return 2
+            if any(k in c for k in ("id", "code", "number", "num", "flag", "key")):
+                return 4
+            return 3
+        dim_cols = sorted(_raw_dims, key=_dim_priority)[:6]
     else:
         dim_cols = ["Category", "Region", "Segment"]
 
