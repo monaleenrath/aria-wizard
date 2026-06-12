@@ -734,6 +734,24 @@ def _action_box(narrative, role: dict, pal: dict, accent: str) -> str:
 </div>"""
 
 
+def _best_first_dim(dim_gs: dict) -> Optional[str]:
+    """Pick the most visually impactful default dimension for the bar chart.
+
+    Targets 5-7 bars (sweet spot for PNG delivery to Slack/Teams where the
+    user cannot interact with the dimension selector). Falls back to the
+    dimension with the most bars if none reaches 5.
+    """
+    if not dim_gs:
+        return None
+
+    def _score(dim: str) -> tuple:
+        n = len(dim_gs[dim]["labels"])
+        in_sweet_spot = 1 if 5 <= n <= 7 else 0
+        return (in_sweet_spot, n)   # prefer sweet-spot, then most bars
+
+    return max(dim_gs.keys(), key=_score)
+
+
 def _filter_panel(dim_groups: dict) -> str:
     """Dropdown selects for up to 4 dimensions."""
     if not dim_groups:
@@ -871,7 +889,7 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
 
     # Dimension bar chart — up to 4 switchable dimensions
     dim_gs    = _dim_groups(all_drivers, 4, 8)
-    first_dim = next(iter(dim_gs), None)
+    first_dim = _best_first_dim(dim_gs)
     bar_html  = ""
     if first_dim:
         d = dim_gs[first_dim]
@@ -971,7 +989,7 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
 </div>"""
 
     # Dimension breakdown chart (switches on filter)
-    first_dim = next(iter(dim_gs), None)
+    first_dim = _best_first_dim(dim_gs)
     dim_chart_html = ""
     if first_dim:
         d = dim_gs[first_dim]
@@ -1025,7 +1043,7 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
 </div>"""
 
     # ─ Chart grid ────────────────────────────────────────────────────────── #
-    first_dim = next(iter(dim_gs), None)
+    first_dim = _best_first_dim(dim_gs)
     ch_h = 160  # chart height
 
     # Top-left: line trend
@@ -1141,7 +1159,7 @@ def generate_html_card(narrative, payload: dict, _config: dict,
     prim_real, _, all_drivers = _resolve_kpis(payload, role)
     sparkline  = payload.get("daily_sales_30d",[])
     dim_gs     = _dim_groups(all_drivers, 4, 8)
-    first_dim  = next(iter(dim_gs), None)
+    first_dim  = _best_first_dim(dim_gs)
 
     # ── Build Chart.js init scripts ─────────────────────────────────────── #
     chart_js = "var ARIA_CHARTS = {};\n"
@@ -1294,7 +1312,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-12-v12 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-13-v13 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
