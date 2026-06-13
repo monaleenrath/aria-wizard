@@ -471,19 +471,37 @@ def _palette(accent: str, n: int) -> list:
     return (p * 4)[:n]
 
 
-def _chart_sparkline(cid: str, values: list, accent: str) -> str:
+def _chart_sparkline(cid: str, values: list, accent: str, labels: list = None) -> str:
     vj = json.dumps([round(v, 2) for v in values])
-    lj = json.dumps([str(i) for i in range(len(values))])
+    lj = json.dumps(labels if labels else [str(i) for i in range(len(values))])
     return f"""
     new Chart(document.getElementById('{cid}'), {{
         type:'line',
         data:{{ labels:{lj}, datasets:[{{ data:{vj},
-            borderColor:'{accent}', borderWidth:1.5, pointRadius:0,
+            borderColor:'{accent}', borderWidth:1.5, pointRadius:0, pointHoverRadius:3,
             fill:true, backgroundColor:'{accent}18', tension:0.4 }}] }},
         options:{{ responsive:true, maintainAspectRatio:false,
-            plugins:{{ legend:{{display:false}}, tooltip:{{enabled:false}} }},
+            plugins:{{ legend:{{display:false}},
+                tooltip:{{
+                    enabled:true, mode:'index', intersect:false,
+                    backgroundColor:'rgba(10,10,20,0.88)',
+                    titleColor:'rgba(255,255,255,0.55)', titleFont:{{size:9}},
+                    bodyColor:'#fff', bodyFont:{{size:11,weight:'bold'}},
+                    padding:7, cornerRadius:5, caretSize:4,
+                    callbacks:{{
+                        label:function(ctx){{
+                            var v=ctx.parsed.y;
+                            if(Math.abs(v)>=1e6) return (v/1e6).toFixed(1)+'M';
+                            if(Math.abs(v)>=1e3) return (v/1e3).toFixed(0)+'K';
+                            return v%1===0 ? String(v) : v.toFixed(2);
+                        }}
+                    }}
+                }}
+            }},
             scales:{{ x:{{display:false}}, y:{{display:false}} }},
-            animation:{{duration:0}} }}
+            animation:{{duration:0}},
+            interaction:{{mode:'index',intersect:false}}
+        }}
     }});"""
 
 
@@ -1014,8 +1032,8 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
   <div class="kpi-name">{_e(kn)}</div>
   <div class="kpi-val {val_cls}" id="sc_kv_{i}" data-orig="{val}">{val}</div>
   {f'<div class="kpi-spark-v2"><canvas id="{spark_id}"></canvas></div>' if has_spark else '<div style="height:8px"></div>'}
-  <div class="kpi-d" style="color:{mc}">{_e(ms)} MoM</div>
-  <div class="kpi-d" style="color:{yc}">{_e(ys)} YoY</div>
+  <div class="kpi-d" id="sc_md_{i}" data-orig="{_e(ms)} MoM" data-oc="{mc}" style="color:{mc}">{_e(ms)} MoM</div>
+  <div class="kpi-d" id="sc_yd_{i}" data-orig="{_e(ys)} YoY" data-oc="{yc}" style="color:{yc}">{_e(ys)} YoY</div>
   {f'<div class="kpi-d" style="color:{wc}">{_e(ws)} WoW</div>' if ws != "—" else ''}
   {target_html}
 </div>"""
@@ -1197,12 +1215,14 @@ def generate_html_card(narrative, payload: dict, _config: dict,
     elif tmpl_key == "scorecard":
         # Per-KPI sparklines — each tile gets its own KPI's time series
         per_kpi_series = payload.get("per_kpi_series", {})
+        per_kpi_dates  = payload.get("per_kpi_dates", [])
         sc_role_kpis = role.get("kpis", list(kpis.keys()))
         sc_show_kpis = ([k for k in sc_role_kpis if k in kpis] or list(kpis.keys()))[:9]
         for i, kn in enumerate(sc_show_kpis):
             series = per_kpi_series.get(kn, [])
             if len(series) > 1:   # 1D → no sparkline; WTD/MTD → show line
-                chart_js += _chart_sparkline(f"sc_spark_{i}", series, accent)
+                lbl = per_kpi_dates[:len(series)] if per_kpi_dates else None
+                chart_js += _chart_sparkline(f"sc_spark_{i}", series, accent, labels=lbl)
         # No bar chart in scorecard v2
 
     elif tmpl_key == "dossier":
@@ -1252,29 +1272,61 @@ function ariaEdDim(pill) {{
     }});
 }}"""
     elif tmpl_key == "scorecard":
-        # Scorecard: filter updates KPI tile values; no bar chart; no chips
+        # Scorecard: filter updates KPI tile values + MoM/YoY; no bar chart; no chips
         sc_role_kpis = role.get("kpis", list(kpis.keys()))
         sc_show_kpis = ([k for k in sc_role_kpis if k in kpis] or list(kpis.keys()))[:9]
         kpi_order_js  = json.dumps(sc_show_kpis)
         dim_member_js = json.dumps(payload.get("dim_member_kpis", {}))
         filter_js = f"""
-var ARIA_KPI_ORDER      = {kpi_order_js};
+var ARIA_KPI_ORDER       = {kpi_order_js};
 var ARIA_DIM_MEMBER_KPIS = {dim_member_js};
+
+/* format a raw pct number → {{text, color}} */
+function _ariaPct(p) {{
+    if (p === null || p === undefined) return {{text:'—', color:'#888'}};
+    var s = p >= 0 ? '▲' : '▼';
+    var c = p >= 0 ? '#34D399' : '#F87171';
+    return {{text: s + ' ' + Math.abs(p).toFixed(1) + '%', color: c}};
+}}
+
 function ariaFilter(sel) {{
     var dim = sel.getAttribute('data-dim');
     var val = sel.value;
-    var memberData = (val === 'All') ? null :
-                     ((ARIA_DIM_MEMBER_KPIS[dim] || {{}})[val] || null);
+    var mData = (val === 'All') ? null :
+                ((ARIA_DIM_MEMBER_KPIS[dim] || {{}})[val] || null);
 
-    // Update each KPI tile value
-    ARIA_KPI_ORDER.forEach(function(kpiName, i) {{
-        var el = document.getElementById('sc_kv_' + i);
-        if (!el) return;
-        if (memberData && memberData[kpiName]) {{
-            el.textContent = memberData[kpiName].value_fmt;
-        }} else {{
-            // Restore original "All" value stored in data-orig
-            el.textContent = el.getAttribute('data-orig') || el.textContent;
+    ARIA_KPI_ORDER.forEach(function(kn, i) {{
+        var kd = mData ? (mData[kn] || null) : null;
+
+        /* ── main value ── */
+        var ve = document.getElementById('sc_kv_' + i);
+        if (ve) ve.textContent = kd ? (kd.value_fmt || ve.getAttribute('data-orig'))
+                                    : ve.getAttribute('data-orig');
+
+        /* ── MoM ── */
+        var me = document.getElementById('sc_md_' + i);
+        if (me) {{
+            if (kd && kd.mom_pct !== undefined && kd.mom_pct !== null) {{
+                var r = _ariaPct(kd.mom_pct);
+                me.textContent = r.text + ' MoM';
+                me.style.color = r.color;
+            }} else {{
+                me.textContent = me.getAttribute('data-orig') || '— MoM';
+                me.style.color = me.getAttribute('data-oc') || '#888';
+            }}
+        }}
+
+        /* ── YoY ── */
+        var ye = document.getElementById('sc_yd_' + i);
+        if (ye) {{
+            if (kd && kd.yoy_pct !== undefined && kd.yoy_pct !== null) {{
+                var r = _ariaPct(kd.yoy_pct);
+                ye.textContent = r.text + ' YoY';
+                ye.style.color = r.color;
+            }} else {{
+                ye.textContent = ye.getAttribute('data-orig') || '— YoY';
+                ye.style.color = ye.getAttribute('data-oc') || '#888';
+            }}
         }}
     }});
 }}
@@ -1362,7 +1414,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-13-v16 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-13-v17 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
