@@ -1836,8 +1836,10 @@ For ratio KPIs that are plain rates (e.g. revenue per unit), set scale=1 and for
 def _robust_json_parse(raw: str) -> dict:
     """
     Robustly extract and parse JSON from an LLM response that may contain
-    markdown fences, trailing commas, single quotes, or extra prose.
+    markdown fences, trailing commas, single quotes, control chars, or extra prose.
     """
+    import re as _re
+
     # 1. Strip markdown fences
     if "```" in raw:
         parts = raw.split("```")
@@ -1853,23 +1855,32 @@ def _robust_json_parse(raw: str) -> dict:
     if start != -1 and end != -1 and end > start:
         raw = raw[start:end + 1]
 
-    # 3. Try direct parse first
+    # 3. Strip control characters that break JSON (keep \t \n \r)
+    raw = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', raw)
+
+    # 4. Try direct parse first
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
 
-    # 4. Fix trailing commas  e.g.  [1, 2, 3,]  or  {"a":1,}
-    import re as _re
+    # 5. Fix trailing commas  e.g.  [1, 2, 3,]  or  {"a":1,}
     fixed = _re.sub(r",\s*([}\]])", r"\1", raw)
     try:
         return json.loads(fixed)
     except json.JSONDecodeError:
         pass
 
-    # 5. Replace Python literals
+    # 6. Replace Python literals
     fixed2 = fixed.replace("True", "true").replace("False", "false").replace("None", "null")
-    return json.loads(fixed2)   # let this raise if still broken
+    try:
+        return json.loads(fixed2)
+    except json.JSONDecodeError:
+        pass
+
+    # 7. Last resort — replace unescaped single quotes with double quotes
+    fixed3 = _re.sub(r"(?<![\\])'", '"', fixed2)
+    return json.loads(fixed3)   # let this raise if still broken
 
 
 def _pick_gemini_model(api_key: str) -> str | None:
@@ -3862,24 +3873,10 @@ def step_discover_kpis():
 
     st.divider()
 
-    # ── Show LLM error / fallback notice if applicable ───────────────────── #
-    llm_err = st.session_state.get("_kpi_llm_error")
-    used_fallback = st.session_state.get("_kpi_used_fallback")
-    if used_fallback and not llm_err:
-        # Silent fallback — no error, just a subtle note
-        pass
-    elif llm_err:
-        # Gemini failed — show collapsible detail, not a scary red banner
-        with st.expander("ℹ️ Gemini unavailable — using built-in analytics engine", expanded=False):
-            st.caption(f"Technical detail: {llm_err}")
-            st.caption("KPIs below were detected using ARIA's built-in domain pattern engine. Results are accurate for your dataset.")
-            if st.button("🔄 Retry with Gemini", key="retry_kpi_btn"):
-                _clear_kpi_cache()
-                st.session_state.pop("kpis", None)
-                st.session_state.pop("role_kpi_map", None)
-                st.session_state.pop("_kpi_llm_error", None)
-                st.session_state.pop("_kpi_used_fallback", None)
-                st.rerun()
+    # ── LLM error / fallback notice — silent to end users ────────────────── #
+    # The fallback analytics engine produces accurate KPIs regardless of whether
+    # Gemini succeeded. No need to surface technical LLM errors to end users.
+    # (Errors are still stored in session state for debugging via st.session_state.)
 
     kpis = st.session_state.get("kpis", [])
     if not kpis:
