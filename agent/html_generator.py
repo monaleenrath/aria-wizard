@@ -363,13 +363,12 @@ body {{
 .kpi-d     {{ font-size:9px; font-weight:600; }}
 .kpi-spark {{ height:32px; margin:4px 0 2px; }}
 
-/* ─ KPI tiles v2 (Scorecard — bigger tiles, taller sparkline) ── */
-.kpi-grid-v2  {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }}
-.kpi-tile-v2  {{ flex:1 1 180px; min-width:160px; max-width:260px;
-                 background:{pal['surface']}; border:1px solid {pal['border']};
+/* ─ KPI tiles v2 (Scorecard — 3-per-row grid, taller sparkline) ── */
+.kpi-grid-v2  {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:14px; }}
+.kpi-tile-v2  {{ background:{pal['surface']}; border:1px solid {pal['border']};
                  border-radius:10px; padding:14px 16px; position:relative;
                  overflow:hidden; }}
-.kpi-spark-v2 {{ height:60px; margin:8px 0 4px; }}
+.kpi-spark-v2 {{ height:64px; margin:8px 0 4px; }}
 
 /* ─ Mini KPI row (Dossier top) ───────────── */
 .mkpi-row  {{ display:flex; gap:8px; margin-bottom:14px; }}
@@ -968,11 +967,20 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
     timeframe      = payload.get("timeframe", "mtd")
 
     # ── Filter panel (BELOW masthead, ABOVE heading) ───────────────────────── #
+    # Use dim_member_kpis keys (all detected dims) so all dropdowns show even
+    # when only one dimension has significant drivers.
+    dim_member_kpis = payload.get("dim_member_kpis", {})
+    # Build filter dims: prefer full dim_member_kpis list; fall back to dim_gs
+    filter_dims_src = dim_member_kpis if dim_member_kpis else {d: dim_gs[d] for d in dim_gs}
     fp_html = ""
-    if dim_gs:
+    if filter_dims_src:
         sels = ""
-        for dim, _ in list(dim_gs.items()):
-            members = dim_gs[dim]["labels"]
+        for dim in list(filter_dims_src.keys()):
+            if dim in dim_gs:
+                members = dim_gs[dim]["labels"]
+            else:
+                # derive members from dim_member_kpis keys
+                members = sorted(filter_dims_src[dim].keys(), key=str)
             opts  = f'<option value="All">{_e(dim)}: All</option>'
             opts += "".join(f'<option value="{_e(m)}">{_e(m)}</option>' for m in members)
             sels += (f'<select class="filter-sel" data-dim="{_e(dim)}" '
@@ -1354,7 +1362,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-13-v15 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-13-v16 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
