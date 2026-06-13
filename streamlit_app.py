@@ -2535,10 +2535,12 @@ def compute_preview_metrics_v2(
         _thirty_ago = ref - timedelta(days=29)
 
     per_kpi_series_preview: dict = {}
+    per_kpi_dates_preview:  list = []
     try:
         _df_pks = df.copy()
         _df_pks["_date"] = pd.to_datetime(_df_pks[date_col]).dt.date
         _df_pks = _df_pks[(_df_pks["_date"] >= _thirty_ago) & (_df_pks["_date"] <= ref)]
+        per_kpi_dates_preview = [str(d) for d in sorted(_df_pks["_date"].unique().tolist())]
         for _kc in kpis_cfg:
             _kn = _kc.get("name","") or _kc.get("label","")
             _col = _kc.get("column","") or _kc.get("num_col","")
@@ -2550,6 +2552,9 @@ def compute_preview_metrics_v2(
                 if _agg == "sum" and _col in _df_pks.columns:
                     _s = _df_pks.groupby("_date")[_col].sum().sort_index()
                     per_kpi_series_preview[_kn] = [round(float(v)*_sc, 4) for v in _s.values]
+                elif _agg == "avg" and _col in _df_pks.columns:
+                    _s = _df_pks.groupby("_date")[_col].mean().sort_index()
+                    per_kpi_series_preview[_kn] = [round(float(v)*_sc, 4) for v in _s.values]
                 elif _agg in ("ratio","pct") and _num in _df_pks.columns and _den in _df_pks.columns:
                     _dn = _df_pks.groupby("_date")[_num].sum()
                     _dd = _df_pks.groupby("_date")[_den].sum()
@@ -2559,8 +2564,9 @@ def compute_preview_metrics_v2(
                 pass
     except Exception:
         per_kpi_series_preview = {}
+        per_kpi_dates_preview  = []
 
-    # ── Per-dimension-member KPI values (scorecard filter updates tile values) ── #
+    # ── Per-dimension-member KPI values (scorecard filter: values + MoM + YoY) ── #
     dim_member_kpis_preview: dict = {}
     try:
         _df_dm = df.copy()
@@ -2569,26 +2575,51 @@ def compute_preview_metrics_v2(
         _dim_cols = [c for c in _df_curr_dm.columns
                      if _df_curr_dm[c].dtype == object and _df_curr_dm[c].nunique() <= 20
                      and c != date_col][:4]
+
+        # Prior period dfs for MoM/YoY
+        _win_dm      = (ref - _thirty_ago).days
+        _pm_end_dm   = _thirty_ago - timedelta(days=1)
+        _pm_start_dm = _pm_end_dm - timedelta(days=_win_dm)
+        _py_start_dm = _thirty_ago - timedelta(days=365)
+        _py_end_dm   = ref - timedelta(days=365)
+        _df_pm_dm = _df_dm[(_df_dm["_date"] >= _pm_start_dm) & (_df_dm["_date"] <= _pm_end_dm)]
+        _df_py_dm = _df_dm[(_df_dm["_date"] >= _py_start_dm) & (_df_dm["_date"] <= _py_end_dm)]
+
+        def _dm_kv(df_s, col, agg, num, den, sc):
+            """Compute a single KPI value from a dataframe subset."""
+            try:
+                if agg == "sum" and col in df_s.columns:
+                    return float(df_s[col].sum()) * sc
+                if agg == "avg" and col in df_s.columns and len(df_s) > 0:
+                    return float(df_s[col].mean()) * sc
+                if agg in ("ratio","pct") and num in df_s.columns and den in df_s.columns:
+                    n = float(df_s[num].sum()); d = float(df_s[den].sum())
+                    return (n / d * sc) if d else 0.0
+            except Exception:
+                pass
+            return None
+
         for _dim in _dim_cols:
             dim_member_kpis_preview[_dim] = {}
             _members = sorted(_df_curr_dm[_dim].dropna().unique().tolist(), key=str)
             for _member in _members:
-                _df_m = _df_curr_dm[_df_curr_dm[_dim] == _member]
+                _df_m  = _df_curr_dm[_df_curr_dm[_dim] == _member]
+                _df_pm = _df_pm_dm[_df_pm_dm[_dim] == _member] \
+                         if _dim in _df_pm_dm.columns else pd.DataFrame()
+                _df_py = _df_py_dm[_df_py_dm[_dim] == _member] \
+                         if _dim in _df_py_dm.columns else pd.DataFrame()
                 _mkpis: dict = {}
                 for _kc in kpis_cfg:
-                    _kn = _kc.get("name","") or _kc.get("label","")
-                    _col = _kc.get("column",""); _agg = _kc.get("agg","sum")
+                    _kn  = _kc.get("name","") or _kc.get("label","")
+                    _col = _kc.get("column","")
+                    _agg = _kc.get("agg","sum")
                     _num = _kc.get("num_col",""); _den = _kc.get("den_col","")
-                    _sc  = float(_kc.get("scale",1)); _fmt = _kc.get("format","number")
+                    _sc  = float(_kc.get("scale",1))
+                    _fmt = _kc.get("format","number")
                     if not _kn: continue
                     try:
-                        if _agg == "sum" and _col in _df_m.columns:
-                            _v = float(_df_m[_col].sum()) * _sc
-                        elif _agg in ("ratio","pct") and _num in _df_m.columns and _den in _df_m.columns:
-                            _n = float(_df_m[_num].sum()); _d = float(_df_m[_den].sum())
-                            _v = (_n/_d*_sc) if _d else 0.0
-                        else:
-                            continue
+                        _v = _dm_kv(_df_m, _col, _agg, _num, _den, _sc)
+                        if _v is None: continue
                         if _fmt == "currency":
                             _vf = (f"${_v/1e6:.1f}M" if abs(_v)>=1e6
                                    else f"${_v/1e3:.0f}K" if abs(_v)>=1e3 else f"${_v:,.0f}")
@@ -2599,7 +2630,17 @@ def compute_preview_metrics_v2(
                         else:
                             _vf = (f"{_v/1e6:.1f}M" if abs(_v)>=1e6
                                    else f"{_v/1e3:.0f}K" if abs(_v)>=1e3 else f"{_v:,.2f}")
-                        _mkpis[_kn] = {"value": round(_v,4), "value_fmt": _vf}
+                        _mom = _yoy = None
+                        if len(_df_pm) > 0:
+                            _pv = _dm_kv(_df_pm, _col, _agg, _num, _den, _sc)
+                            if _pv and _pv != 0:
+                                _mom = round((_v / _pv - 1) * 100, 2)
+                        if len(_df_py) > 0:
+                            _pv = _dm_kv(_df_py, _col, _agg, _num, _den, _sc)
+                            if _pv and _pv != 0:
+                                _yoy = round((_v / _pv - 1) * 100, 2)
+                        _mkpis[_kn] = {"value": round(_v,4), "value_fmt": _vf,
+                                       "mom_pct": _mom, "yoy_pct": _yoy}
                     except Exception:
                         pass
                 dim_member_kpis_preview[_dim][str(_member)] = _mkpis
@@ -2622,6 +2663,7 @@ def compute_preview_metrics_v2(
     payload["trend_series"]        = trend_series
     payload["monthly_revenue_12m"] = monthly_revenue_12m
     payload["per_kpi_series"]      = per_kpi_series_preview
+    payload["per_kpi_dates"]       = per_kpi_dates_preview
     payload["dim_member_kpis"]     = dim_member_kpis_preview
     payload["timeframe_key"]       = timeframe_key
 
@@ -3014,6 +3056,7 @@ def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
         "daily_sales_30d":     metrics.get("trend_series", []),
         "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
         "per_kpi_series":      metrics.get("per_kpi_series", {}),
+        "per_kpi_dates":       metrics.get("per_kpi_dates", []),
         "dim_member_kpis":     metrics.get("dim_member_kpis", {}),
     }
     cfg = {
@@ -3098,6 +3141,7 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
         "daily_sales_30d":     metrics.get("trend_series", []),
         "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
         "per_kpi_series":      metrics.get("per_kpi_series", {}),
+        "per_kpi_dates":       metrics.get("per_kpi_dates", []),
         "dim_member_kpis":     metrics.get("dim_member_kpis", {}),
     }
 
