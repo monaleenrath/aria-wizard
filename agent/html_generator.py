@@ -1024,7 +1024,11 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
     show_kpis   = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:5]
     tier        = _role_tier(role)
     sparkline   = payload.get("daily_sales_30d",[])
+    monthly_12m = payload.get("monthly_revenue_12m", {})
     dim_gs      = _dim_groups(all_drivers, 4, 8)
+    # Trend chart label: use the revenue column name if available, else primary KPI
+    _trend_col  = monthly_12m.get("col", "") or ""
+    _trend_title = f"Revenue — Monthly (12M)" if _trend_col else f"Trend — {prim}"
 
     # ─ Mini KPI row ──────────────────────────────────────────────────────── #
     mini_tiles = ""
@@ -1094,7 +1098,7 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
     chart_grid = f"""
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
   <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
-    <div id="ds-trend-title" class="sec">Trend — {_e(prim)}</div>
+    <div id="ds-trend-title" class="sec">{_e(_trend_title)}</div>
     {trend_html}
   </div>
   <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
@@ -1162,7 +1166,9 @@ def generate_html_card(narrative, payload: dict, _config: dict,
     first_dim  = _best_first_dim(dim_gs)
 
     # ── Build Chart.js init scripts ─────────────────────────────────────── #
-    chart_js = "var ARIA_CHARTS = {};\n"
+    # NOTE: ARIA_CHARTS declared globally in the HTML template below.
+    #       chart_js MUST NOT redeclare it — just populate it.
+    chart_js = ""
 
     if tmpl_key == "editorial":
         # Driver bar
@@ -1184,8 +1190,13 @@ def generate_html_card(narrative, payload: dict, _config: dict,
             chart_js += _chart_bar_v("sc_dimbar", d["labels"], d["values"], accent, pal)
 
     elif tmpl_key == "dossier":
-        # Line trend
-        if len(sparkline) >= 4:
+        # Line trend — prefer monthly 12M series (smooth); fall back to daily 30d
+        monthly_12m = payload.get("monthly_revenue_12m", {})
+        m_values = monthly_12m.get("values", [])
+        m_labels = monthly_12m.get("labels", [])
+        if len(m_values) >= 3:
+            chart_js += _chart_line_trend("ds_trend", m_values, accent, pal, labels=m_labels)
+        elif len(sparkline) >= 4:
             chart_js += _chart_line_trend("ds_trend", sparkline[-60:], accent, pal)
         # Dimension bar (filterable)
         if first_dim:
@@ -1312,7 +1323,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-13-v13 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-13-v14 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -1324,8 +1335,13 @@ function ariaFilter(sel) {{
 {body}
 <script src="{_CHARTJS}"></script>
 <script>
+/* ── Global state — must be in window scope so inline onclick/onchange can find functions ── */
+var ARIA_CHARTS = {{}};
+{filter_js}
+</script>
+<script>
+/* ── Chart init — runs after DOM is ready so canvas elements exist ── */
 document.addEventListener('DOMContentLoaded', function() {{
-    {filter_js}
     {chart_js}
 }});
 </script>
