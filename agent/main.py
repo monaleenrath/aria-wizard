@@ -188,7 +188,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
                 if _agg == "sum" and _col in _df_ts.columns:
                     _s = _df_ts.groupby("_date")[_col].sum().sort_index()
                     per_kpi_series[_kname] = [round(float(v) * _sc, 4) for v in _s.values]
-                elif _agg == "avg" and _col in _df_ts.columns:
+                elif _agg in ("avg", "mean") and _col in _df_ts.columns:
                     _s = _df_ts.groupby("_date")[_col].mean().sort_index()
                     per_kpi_series[_kname] = [round(float(v) * _sc, 4) for v in _s.values]
                 elif _agg in ("ratio", "pct") and _num in _df_ts.columns and _den in _df_ts.columns:
@@ -227,6 +227,20 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         _cfg_dims = config.get("drivers", {}).get("dimensions", [])
         _cfg_kpis = config.get("metrics", {}).get("kpis", [])
 
+        # If config has no driver dims (e.g. older config.yaml), auto-detect
+        # dimension columns from the dataframe (same logic as preview)
+        if not _cfg_dims:
+            _kpi_cols = {k.get("column","") for k in _cfg_kpis} | \
+                        {k.get("num_col","") for k in _cfg_kpis} | \
+                        {k.get("den_col","") for k in _cfg_kpis}
+            _kpi_cols.discard("")
+            _date_like = {"date","time","year","month","quarter","week","day"}
+            _cfg_dims = [c for c in _df_curr.columns
+                         if _df_curr[c].dtype == object
+                         and _df_curr[c].nunique() <= 20
+                         and c not in _kpi_cols
+                         and not any(d in c.lower() for d in _date_like)][:4]
+
         def _kpi_val_for_subset(df_sub, kpi_cfg, df_pm=None, df_py=None):
             col = kpi_cfg.get("column",""); agg = kpi_cfg.get("agg","sum")
             num = kpi_cfg.get("num_col",""); den = kpi_cfg.get("den_col","")
@@ -236,7 +250,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
                 try:
                     if agg == "sum" and col in ds.columns:
                         return float(ds[col].sum()) * scale
-                    if agg == "avg" and col in ds.columns:
+                    if agg in ("avg", "mean") and col in ds.columns:
                         return float(ds[col].mean()) * scale if len(ds) > 0 else None
                     if agg in ("ratio","pct") and num in ds.columns and den in ds.columns:
                         n = float(ds[num].sum()); d = float(ds[den].sum())
