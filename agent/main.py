@@ -170,6 +170,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
 
     # Per-KPI time series (scorecard: each tile shows its own KPI's sparkline)
     per_kpi_series: dict = {}
+    per_kpi_dates:  list = []
     try:
         _ref_d   = _dt2.date.fromisoformat(snapshot.reference_date)
         _start_d = _dt2.date.fromisoformat(snapshot.window_start)
@@ -177,6 +178,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         _df_ts[date_col] = _pd.to_datetime(_df_ts[date_col], errors="coerce")
         _df_ts["_date"] = _df_ts[date_col].dt.date
         _df_ts = _df_ts[(_df_ts["_date"] >= _start_d) & (_df_ts["_date"] <= _ref_d)]
+        per_kpi_dates = [str(d) for d in sorted(_df_ts["_date"].unique().tolist())]
         for _kc in config.get("metrics", {}).get("kpis", []):
             _kname = _kc.get("name", ""); _col = _kc.get("column", "")
             _agg = _kc.get("agg", "sum"); _num = _kc.get("num_col", "")
@@ -185,6 +187,9 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
             try:
                 if _agg == "sum" and _col in _df_ts.columns:
                     _s = _df_ts.groupby("_date")[_col].sum().sort_index()
+                    per_kpi_series[_kname] = [round(float(v) * _sc, 4) for v in _s.values]
+                elif _agg == "avg" and _col in _df_ts.columns:
+                    _s = _df_ts.groupby("_date")[_col].mean().sort_index()
                     per_kpi_series[_kname] = [round(float(v) * _sc, 4) for v in _s.values]
                 elif _agg in ("ratio", "pct") and _num in _df_ts.columns and _den in _df_ts.columns:
                     _dn = _df_ts.groupby("_date")[_num].sum()
@@ -195,32 +200,53 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
                 pass
     except Exception:
         per_kpi_series = {}
+        per_kpi_dates  = []
 
-    # Per-dimension-member KPI values (scorecard filter updates tile values)
+    # Per-dimension-member KPI values (scorecard filter: values + MoM + YoY per member)
     dim_member_kpis: dict = {}
     try:
+        from datetime import timedelta as _td2
         _ref_d   = _dt2.date.fromisoformat(snapshot.reference_date)
         _start_d = _dt2.date.fromisoformat(snapshot.window_start)
         _df_filt = df.copy()
         _df_filt[date_col] = _pd.to_datetime(_df_filt[date_col], errors="coerce")
         _df_filt["_date"] = _df_filt[date_col].dt.date
         _df_curr = _df_filt[(_df_filt["_date"] >= _start_d) & (_df_filt["_date"] <= _ref_d)]
+
+        # Prior period date ranges for MoM/YoY
+        _win_days      = (_ref_d - _start_d).days
+        _prior_m_end   = _start_d - _td2(days=1)
+        _prior_m_start = _prior_m_end - _td2(days=_win_days)
+        _prior_y_start = _start_d - _td2(days=365)
+        _prior_y_end   = _ref_d - _td2(days=365)
+        _df_prior_m = _df_filt[(_df_filt["_date"] >= _prior_m_start) &
+                                (_df_filt["_date"] <= _prior_m_end)]
+        _df_prior_y = _df_filt[(_df_filt["_date"] >= _prior_y_start) &
+                                (_df_filt["_date"] <= _prior_y_end)]
+
         _cfg_dims = config.get("drivers", {}).get("dimensions", [])
         _cfg_kpis = config.get("metrics", {}).get("kpis", [])
 
-        def _kpi_val_for_subset(df_sub, kpi_cfg):
+        def _kpi_val_for_subset(df_sub, kpi_cfg, df_pm=None, df_py=None):
             col = kpi_cfg.get("column",""); agg = kpi_cfg.get("agg","sum")
             num = kpi_cfg.get("num_col",""); den = kpi_cfg.get("den_col","")
             scale = float(kpi_cfg.get("scale",1)); fmt = kpi_cfg.get("format","number")
-            try:
-                if agg == "sum" and col in df_sub.columns:
-                    val = float(df_sub[col].sum()) * scale
-                elif agg in ("ratio","pct") and num in df_sub.columns and den in df_sub.columns:
-                    n = float(df_sub[num].sum()); d = float(df_sub[den].sum())
-                    val = (n / d * scale) if d else 0.0
-                else:
+
+            def _cv(ds):
+                try:
+                    if agg == "sum" and col in ds.columns:
+                        return float(ds[col].sum()) * scale
+                    if agg == "avg" and col in ds.columns:
+                        return float(ds[col].mean()) * scale if len(ds) > 0 else None
+                    if agg in ("ratio","pct") and num in ds.columns and den in ds.columns:
+                        n = float(ds[num].sum()); d = float(ds[den].sum())
+                        return (n / d * scale) if d else 0.0
                     return None
-            except Exception:
+                except Exception:
+                    return None
+
+            val = _cv(df_sub)
+            if val is None:
                 return None
             if fmt == "currency":
                 vfmt = (f"${val/1e6:.1f}M" if abs(val)>=1e6
@@ -232,19 +258,33 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
             else:
                 vfmt = (f"{val/1e6:.1f}M" if abs(val)>=1e6
                         else f"{val/1e3:.0f}K" if abs(val)>=1e3 else f"{val:,.2f}")
-            return {"value": round(val,4), "value_fmt": vfmt}
+            mom_pct = yoy_pct = None
+            if df_pm is not None and len(df_pm) > 0:
+                pv = _cv(df_pm)
+                if pv and pv != 0:
+                    mom_pct = round((val / pv - 1) * 100, 2)
+            if df_py is not None and len(df_py) > 0:
+                pv = _cv(df_py)
+                if pv and pv != 0:
+                    yoy_pct = round((val / pv - 1) * 100, 2)
+            return {"value": round(val,4), "value_fmt": vfmt,
+                    "mom_pct": mom_pct, "yoy_pct": yoy_pct}
 
         for _dim in _cfg_dims:
             if _dim not in _df_curr.columns: continue
             dim_member_kpis[_dim] = {}
             _members = sorted(_df_curr[_dim].dropna().unique().tolist(), key=str)
             for _member in _members:
-                _df_m = _df_curr[_df_curr[_dim] == _member]
+                _df_m  = _df_curr[_df_curr[_dim] == _member]
+                _df_pm = _df_prior_m[_df_prior_m[_dim] == _member] \
+                         if _dim in _df_prior_m.columns else _pd.DataFrame()
+                _df_py = _df_prior_y[_df_prior_y[_dim] == _member] \
+                         if _dim in _df_prior_y.columns else _pd.DataFrame()
                 _mkpis = {}
                 for _kc in _cfg_kpis:
                     _kn = _kc.get("name","")
                     if not _kn: continue
-                    _res = _kpi_val_for_subset(_df_m, _kc)
+                    _res = _kpi_val_for_subset(_df_m, _kc, _df_pm, _df_py)
                     if _res: _mkpis[_kn] = _res
                 dim_member_kpis[_dim][str(_member)] = _mkpis
     except Exception:
@@ -254,10 +294,11 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         **snapshot.to_dict(),
         "drivers": drivers_to_dict(drivers_yoy),
         "drivers_dod": drivers_to_dict(drivers_dod),
-        "daily_sales_30d":    daily_sales_30d,
+        "daily_sales_30d":     daily_sales_30d,
         "monthly_revenue_12m": monthly_revenue_12m,
-        "per_kpi_series":     per_kpi_series,
-        "dim_member_kpis":    dim_member_kpis,
+        "per_kpi_series":      per_kpi_series,
+        "per_kpi_dates":       per_kpi_dates,
+        "dim_member_kpis":     dim_member_kpis,
         "_aria_debug": {
             "da_ver": DRIVER_ANALYSIS_VERSION,
             "cfg_dims": config.get("drivers", {}).get("dimensions", []),
