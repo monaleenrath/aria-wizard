@@ -347,7 +347,7 @@ body {{
 .sec {{ font-size:8px; font-weight:700; letter-spacing:3px;
         color:{accent}; text-transform:uppercase; margin-bottom:7px; }}
 
-/* ─ KPI tiles ────────────────────────────── */
+/* ─ KPI tiles (original — used by other contexts) ── */
 .kpi-grid  {{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }}
 .kpi-tile  {{ flex:1 1 150px; min-width:130px; max-width:220px;
               background:{pal['surface']}; border:1px solid {pal['border']};
@@ -362,6 +362,14 @@ body {{
 .kpi-val.sm{{ font-size:15px; }}
 .kpi-d     {{ font-size:9px; font-weight:600; }}
 .kpi-spark {{ height:32px; margin:4px 0 2px; }}
+
+/* ─ KPI tiles v2 (Scorecard — bigger tiles, taller sparkline) ── */
+.kpi-grid-v2  {{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }}
+.kpi-tile-v2  {{ flex:1 1 180px; min-width:160px; max-width:260px;
+                 background:{pal['surface']}; border:1px solid {pal['border']};
+                 border-radius:10px; padding:14px 16px; position:relative;
+                 overflow:hidden; }}
+.kpi-spark-v2 {{ height:60px; margin:8px 0 4px; }}
 
 /* ─ Mini KPI row (Dossier top) ───────────── */
 .mkpi-row  {{ display:flex; gap:8px; margin-bottom:14px; }}
@@ -946,27 +954,41 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TEMPLATE 2 — SCORECARD  (KPI grid + sparklines + filters)
+# TEMPLATE 2 — SCORECARD  (KPI grid + per-KPI sparklines + live dim filter)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
-    accent      = role.get("accent_color","#F59E0B")
+    accent         = role.get("accent_color","#F59E0B")
     prim, kpis, all_drivers = _resolve_kpis(payload, role)
-    role_kpis   = role.get("kpis", list(kpis.keys()))
-    show_kpis   = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:9]
-    tier        = _role_tier(role)
-    sparkline   = payload.get("daily_sales_30d",[])
-    dim_gs      = _dim_groups(all_drivers, 4, 8)
+    role_kpis      = role.get("kpis", list(kpis.keys()))
+    show_kpis      = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:9]
+    tier           = _role_tier(role)
+    dim_gs         = _dim_groups(all_drivers, 4, 8)
+    per_kpi_series = payload.get("per_kpi_series", {})
+    timeframe      = payload.get("timeframe", "mtd")
 
-    # KPI tiles with sparklines
+    # ── Filter panel (BELOW masthead, ABOVE heading) ───────────────────────── #
+    fp_html = ""
+    if dim_gs:
+        sels = ""
+        for dim, _ in list(dim_gs.items()):
+            members = dim_gs[dim]["labels"]
+            opts  = f'<option value="All">{_e(dim)}: All</option>'
+            opts += "".join(f'<option value="{_e(m)}">{_e(m)}</option>' for m in members)
+            sels += (f'<select class="filter-sel" data-dim="{_e(dim)}" '
+                     f'onchange="ariaFilter(this)">{opts}</select> ')
+        fp_html = (f'<div class="filter-panel" style="margin:8px 0 10px">'
+                   f'<span class="filter-lbl">View by</span> {sels}</div>')
+
+    # ── KPI tiles ─────────────────────────────────────────────────────────── #
     tiles_html = ""
     for i, kn in enumerate(show_kpis):
-        kd   = kpis[kn]
-        val  = _e(kd.get("value_fmt","—"))
+        kd  = kpis[kn]
+        val = _e(kd.get("value_fmt","—"))
         ms, mc = _fmt_pct(kd.get("mom_pct"))
         ys, yc = _fmt_pct(kd.get("yoy_pct"))
         ws, wc = _fmt_pct(kd.get("wow_pct"))
-        rag  = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
+        rag    = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
         target_delta = kd.get("target_pct")
         target_html  = ""
         if target_delta is not None:
@@ -974,40 +996,28 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
             target_html = (f'<div class="kpi-d" style="color:{tc_};font-size:8px">'
                            f'vs Target {_e(ts)}</div>')
         val_cls = "sm" if len(str(val)) > 8 else ""
-        has_spark = len(sparkline) >= 4
-        spark_id  = f"sc_spark_{i}"
+        # Only show sparkline if we have >1 data point (1D → no line)
+        kpi_series = per_kpi_series.get(kn, [])
+        has_spark  = len(kpi_series) > 1
+        spark_id   = f"sc_spark_{i}"
         tiles_html += f"""
-<div class="kpi-tile">
+<div class="kpi-tile-v2">
   <div class="kpi-rag" style="background:{rag}"></div>
   <div class="kpi-name">{_e(kn)}</div>
-  <div class="kpi-val {val_cls}">{val}</div>
-  {f'<div class="kpi-spark"><canvas id="{spark_id}"></canvas></div>' if has_spark else ''}
+  <div class="kpi-val {val_cls}" id="sc_kv_{i}" data-orig="{val}">{val}</div>
+  {f'<div class="kpi-spark-v2"><canvas id="{spark_id}"></canvas></div>' if has_spark else '<div style="height:8px"></div>'}
   <div class="kpi-d" style="color:{mc}">{_e(ms)} MoM</div>
   <div class="kpi-d" style="color:{yc}">{_e(ys)} YoY</div>
   {f'<div class="kpi-d" style="color:{wc}">{_e(ws)} WoW</div>' if ws != "—" else ''}
   {target_html}
 </div>"""
 
-    # Dimension breakdown chart (switches on filter)
-    first_dim = _best_first_dim(dim_gs)
-    dim_chart_html = ""
-    if first_dim:
-        d = dim_gs[first_dim]
-        n = len(d["labels"])
-        dim_chart_html = f"""
-<div style="margin-top:14px;border-top:1px solid {pal['border']};padding-top:12px">
-  <div id="sc-dim-title" class="sec">{_e(first_dim)} Breakdown</div>
-  <div class="chart-box" style="height:{min(max(n*28+20,80),220)}px">
-    <canvas id="sc_dimbar"></canvas>
-  </div>
-</div>"""
-
     return f"""
 <div class="card">
-  {_masthead(payload, role, pal, accent, filter_html=_filter_panel(dim_gs))}
+  {_masthead(payload, role, pal, accent)}
+  {fp_html}
   <div class="sec">Performance Scorecard</div>
-  <div class="kpi-grid">{tiles_html}</div>
-  {dim_chart_html}
+  <div class="kpi-grid-v2">{tiles_html}</div>
   {_narrative_section(narrative, pal, accent, kpis, role_kpis, tier)}
   {_footer(narrative, accent, pal)}
 </div>"""
@@ -1177,17 +1187,15 @@ def generate_html_card(narrative, payload: dict, _config: dict,
             chart_js += _chart_bar_h("ed_bar", d["labels"], d["values"], accent, pal)
 
     elif tmpl_key == "scorecard":
-        # Sparklines per tile
-        role_kpis = role.get("kpis", list(kpis.keys()))
-        show_kpis = ([k for k in role_kpis if k in kpis] or list(kpis.keys()))[:9]
-        if len(sparkline) >= 4:
-            for i in range(len(show_kpis)):
-                # Scale sparkline to this KPI's magnitude
-                chart_js += _chart_sparkline(f"sc_spark_{i}", sparkline[-30:], accent)
-        # Dimension bar (filterable)
-        if first_dim:
-            d = dim_gs[first_dim]
-            chart_js += _chart_bar_v("sc_dimbar", d["labels"], d["values"], accent, pal)
+        # Per-KPI sparklines — each tile gets its own KPI's time series
+        per_kpi_series = payload.get("per_kpi_series", {})
+        sc_role_kpis = role.get("kpis", list(kpis.keys()))
+        sc_show_kpis = ([k for k in sc_role_kpis if k in kpis] or list(kpis.keys()))[:9]
+        for i, kn in enumerate(sc_show_kpis):
+            series = per_kpi_series.get(kn, [])
+            if len(series) > 1:   # 1D → no sparkline; WTD/MTD → show line
+                chart_js += _chart_sparkline(f"sc_spark_{i}", series, accent)
+        # No bar chart in scorecard v2
 
     elif tmpl_key == "dossier":
         # Line trend — prefer monthly 12M series (smooth); fall back to daily 30d
@@ -1235,9 +1243,37 @@ function ariaEdDim(pill) {{
         p.classList.toggle('ed-dim-pill-active', p.getAttribute('data-dim') === dim);
     }});
 }}"""
-    elif tmpl_key in ("scorecard", "dossier"):
-        bar_id    = "sc_dimbar" if tmpl_key == "scorecard" else "ds_dimbar"
-        title_id  = "sc-dim-title" if tmpl_key == "scorecard" else "ds-dim-title"
+    elif tmpl_key == "scorecard":
+        # Scorecard: filter updates KPI tile values; no bar chart; no chips
+        sc_role_kpis = role.get("kpis", list(kpis.keys()))
+        sc_show_kpis = ([k for k in sc_role_kpis if k in kpis] or list(kpis.keys()))[:9]
+        kpi_order_js  = json.dumps(sc_show_kpis)
+        dim_member_js = json.dumps(payload.get("dim_member_kpis", {}))
+        filter_js = f"""
+var ARIA_KPI_ORDER      = {kpi_order_js};
+var ARIA_DIM_MEMBER_KPIS = {dim_member_js};
+function ariaFilter(sel) {{
+    var dim = sel.getAttribute('data-dim');
+    var val = sel.value;
+    var memberData = (val === 'All') ? null :
+                     ((ARIA_DIM_MEMBER_KPIS[dim] || {{}})[val] || null);
+
+    // Update each KPI tile value
+    ARIA_KPI_ORDER.forEach(function(kpiName, i) {{
+        var el = document.getElementById('sc_kv_' + i);
+        if (!el) return;
+        if (memberData && memberData[kpiName]) {{
+            el.textContent = memberData[kpiName].value_fmt;
+        }} else {{
+            // Restore original "All" value stored in data-orig
+            el.textContent = el.getAttribute('data-orig') || el.textContent;
+        }}
+    }});
+}}
+"""
+    elif tmpl_key == "dossier":
+        bar_id    = "ds_dimbar"
+        title_id  = "ds-dim-title"
         accent_e  = accent
         palette_js = json.dumps(_PALETTE8)
         filter_js = f"""
@@ -1251,11 +1287,8 @@ function ariaFilter(sel) {{
     if (!d) return;
     var chart = ARIA_CHARTS['{bar_id}'];
     if (chart) {{
-        // Switch chart to the selected dimension
         chart.data.labels = d.labels;
         chart.data.datasets[0].data = d.values;
-
-        // Highlight the selected member; dim the rest
         if (val === 'All') {{
             chart.data.datasets[0].backgroundColor =
                 d.labels.map(function(l, i) {{ return ARIA_PALETTE[i % ARIA_PALETTE.length]; }});
@@ -1266,12 +1299,10 @@ function ariaFilter(sel) {{
                 }});
         }}
         chart.update('none');
-
         var t = document.getElementById('{title_id}');
         if (t) t.textContent = dim + ' Breakdown' + (val !== 'All' ? ' • ' + val : '');
     }}
-
-    // Update filter chip for THIS dropdown only (remove old, add new)
+    // Update filter chip (dossier keeps chips for visual context)
     var existingChip = sel.parentNode.querySelector('.filter-chip[data-dim="' + dim + '"]');
     if (existingChip) existingChip.remove();
     if (val !== 'All') {{
@@ -1323,7 +1354,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-13-v14 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-13-v15 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
