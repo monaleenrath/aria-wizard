@@ -2485,10 +2485,12 @@ def compute_preview_metrics_v2(
 
     # ── Sparkline — 30-day daily series for the primary KPI ──────────────── #
     trend_series: list = []
+    _spark_col_global = ""
     try:
         _first_kpi  = next((k for k in kpis_cfg if k.get("enabled", True)), None)
         _spark_col  = (_first_kpi.get("column") or _first_kpi.get("num_col", "")) \
                       if _first_kpi else ""
+        _spark_col_global = _spark_col
         if _spark_col and _spark_col in df.columns:
             _df_spark = df.copy()
             _df_spark["_date"] = pd.to_datetime(_df_spark[date_col]).dt.date
@@ -2504,6 +2506,27 @@ def compute_preview_metrics_v2(
     except Exception:
         trend_series = []
 
+    # ── Monthly revenue — 12-month series for dossier/scorecard trend chart ── #
+    monthly_revenue_12m: dict = {"labels": [], "values": [], "col": _spark_col_global}
+    try:
+        if _spark_col_global and _spark_col_global in df.columns:
+            _df_mon = df.copy()
+            _df_mon["_date"] = pd.to_datetime(_df_mon[date_col]).dt.date
+            _df_mon["_month"] = pd.to_datetime(_df_mon[date_col]).dt.to_period("M")
+            _monthly = (
+                _df_mon.groupby("_month")[_spark_col_global]
+                .sum()
+                .sort_index()
+                .tail(12)
+            )
+            monthly_revenue_12m = {
+                "labels": [str(p) for p in _monthly.index],
+                "values": [round(float(v), 2) for v in _monthly.values],
+                "col":    _spark_col_global,
+            }
+    except Exception:
+        monthly_revenue_12m = {"labels": [], "values": [], "col": _spark_col_global}
+
     # ── Flatten drivers to a list for backward-compat with callers ────────── #
     # Callers (build_live_narrative, generate_svg_preview) expect either:
     #   - flat list [{dimension, member, delta, ...}]  (old format)
@@ -2516,9 +2539,10 @@ def compute_preview_metrics_v2(
 
     payload = snapshot.to_dict()   # already has reference_date, window_start,
                                    # timeframe, kpis (with value_fmt, mom_pct etc.)
-    payload["drivers"]      = drivers_raw   # dict {kpi_name: [DriverItem dicts]}
-    payload["trend_series"] = trend_series
-    payload["timeframe_key"] = timeframe_key
+    payload["drivers"]             = drivers_raw   # dict {kpi_name: [DriverItem dicts]}
+    payload["trend_series"]        = trend_series
+    payload["monthly_revenue_12m"] = monthly_revenue_12m
+    payload["timeframe_key"]       = timeframe_key
 
     # ── Target / Achievement KPIs (optional) ──────────────────────────────── #
     # If the user uploaded a target/plan file in Step 2, compute:
@@ -2904,9 +2928,10 @@ def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
         "window_start":    metrics.get("window_start", ""),
         "timeframe":       metrics.get("timeframe", metrics.get("timeframe_key", "1d")),
         "kpis":            metrics.get("kpis", {}),
-        "anomalies":       metrics.get("anomalies", []),
-        "drivers":         drivers_dict,
-        "daily_sales_30d": metrics.get("trend_series", []),
+        "anomalies":           metrics.get("anomalies", []),
+        "drivers":             drivers_dict,
+        "daily_sales_30d":     metrics.get("trend_series", []),
+        "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
     }
     cfg = {
         "llm": {
@@ -2985,9 +3010,10 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
         "reference_date":  metrics.get("reference_date", str(date.today())),
         "window_start":    metrics.get("window_start", ""),
         "timeframe":       metrics.get("timeframe", metrics.get("timeframe_key", "1d")),
-        "kpis":            role_kpis_filtered,
-        "drivers":         drivers_dict,
-        "daily_sales_30d": metrics.get("trend_series", []),
+        "kpis":                role_kpis_filtered,
+        "drivers":             drivers_dict,
+        "daily_sales_30d":     metrics.get("trend_series", []),
+        "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
     }
 
     mod_role = dict(role_cfg)
