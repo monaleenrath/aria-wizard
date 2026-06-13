@@ -145,11 +145,35 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         .tolist()
     ) if _spark_col else []
 
+    # Monthly revenue for the past 12 months — used by dossier/scorecard trend chart.
+    # Much smoother than daily data and more meaningful for leadership briefings.
+    monthly_revenue_12m = {"labels": [], "values": [], "col": _spark_col or ""}
+    if _spark_col:
+        try:
+            df_monthly = df.copy()
+            df_monthly[date_col] = _pd.to_datetime(df_monthly[date_col], errors="coerce")
+            df_monthly = df_monthly.dropna(subset=[date_col])
+            df_monthly["_month"] = df_monthly[date_col].dt.to_period("M")
+            monthly = (
+                df_monthly.groupby("_month")[_spark_col]
+                .sum()
+                .sort_index()
+                .tail(12)
+            )
+            monthly_revenue_12m = {
+                "labels": [str(p) for p in monthly.index],   # e.g. "2024-01"
+                "values": [round(float(v), 2) for v in monthly.values],
+                "col": _spark_col,
+            }
+        except Exception:
+            pass  # fall back to empty — html_generator will use daily_sales_30d
+
     payload = {
         **snapshot.to_dict(),
         "drivers": drivers_to_dict(drivers_yoy),
         "drivers_dod": drivers_to_dict(drivers_dod),
         "daily_sales_30d": daily_sales_30d,
+        "monthly_revenue_12m": monthly_revenue_12m,
         "_aria_debug": {
             "da_ver": DRIVER_ANALYSIS_VERSION,
             "cfg_dims": config.get("drivers", {}).get("dimensions", []),
