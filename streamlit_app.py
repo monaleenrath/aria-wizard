@@ -2527,6 +2527,79 @@ def compute_preview_metrics_v2(
     except Exception:
         monthly_revenue_12m = {"labels": [], "values": [], "col": _spark_col_global}
 
+    # ── Per-KPI time series (scorecard: each tile shows its own KPI sparkline) ── #
+    per_kpi_series_preview: dict = {}
+    try:
+        _df_pks = df.copy()
+        _df_pks["_date"] = pd.to_datetime(_df_pks[date_col]).dt.date
+        _df_pks = _df_pks[(_df_pks["_date"] >= _thirty_ago) & (_df_pks["_date"] <= ref)]
+        for _kc in kpis_cfg:
+            _kn = _kc.get("name","") or _kc.get("label","")
+            _col = _kc.get("column","") or _kc.get("num_col","")
+            _agg = _kc.get("agg","sum")
+            _num = _kc.get("num_col",""); _den = _kc.get("den_col","")
+            _sc  = float(_kc.get("scale", 1))
+            if not _kn: continue
+            try:
+                if _agg == "sum" and _col in _df_pks.columns:
+                    _s = _df_pks.groupby("_date")[_col].sum().sort_index()
+                    per_kpi_series_preview[_kn] = [round(float(v)*_sc, 4) for v in _s.values]
+                elif _agg in ("ratio","pct") and _num in _df_pks.columns and _den in _df_pks.columns:
+                    _dn = _df_pks.groupby("_date")[_num].sum()
+                    _dd = _df_pks.groupby("_date")[_den].sum()
+                    _r  = (_dn / _dd.where(_dd > 0)).fillna(0) * _sc
+                    per_kpi_series_preview[_kn] = [round(float(v),4) for v in _r.sort_index().values]
+            except Exception:
+                pass
+    except Exception:
+        per_kpi_series_preview = {}
+
+    # ── Per-dimension-member KPI values (scorecard filter updates tile values) ── #
+    dim_member_kpis_preview: dict = {}
+    try:
+        _df_dm = df.copy()
+        _df_dm["_date"] = pd.to_datetime(_df_dm[date_col]).dt.date
+        _df_curr_dm = _df_dm[(_df_dm["_date"] >= _thirty_ago) & (_df_dm["_date"] <= ref)]
+        _dim_cols = [c for c in _df_curr_dm.columns
+                     if _df_curr_dm[c].dtype == object and _df_curr_dm[c].nunique() <= 20
+                     and c != date_col][:4]
+        for _dim in _dim_cols:
+            dim_member_kpis_preview[_dim] = {}
+            _members = sorted(_df_curr_dm[_dim].dropna().unique().tolist(), key=str)
+            for _member in _members:
+                _df_m = _df_curr_dm[_df_curr_dm[_dim] == _member]
+                _mkpis: dict = {}
+                for _kc in kpis_cfg:
+                    _kn = _kc.get("name","") or _kc.get("label","")
+                    _col = _kc.get("column",""); _agg = _kc.get("agg","sum")
+                    _num = _kc.get("num_col",""); _den = _kc.get("den_col","")
+                    _sc  = float(_kc.get("scale",1)); _fmt = _kc.get("format","number")
+                    if not _kn: continue
+                    try:
+                        if _agg == "sum" and _col in _df_m.columns:
+                            _v = float(_df_m[_col].sum()) * _sc
+                        elif _agg in ("ratio","pct") and _num in _df_m.columns and _den in _df_m.columns:
+                            _n = float(_df_m[_num].sum()); _d = float(_df_m[_den].sum())
+                            _v = (_n/_d*_sc) if _d else 0.0
+                        else:
+                            continue
+                        if _fmt == "currency":
+                            _vf = (f"${_v/1e6:.1f}M" if abs(_v)>=1e6
+                                   else f"${_v/1e3:.0f}K" if abs(_v)>=1e3 else f"${_v:,.0f}")
+                        elif _fmt == "percent":
+                            _vf = f"{_v:.1%}"
+                        elif _fmt == "integer":
+                            _vf = f"{int(_v):,}"
+                        else:
+                            _vf = (f"{_v/1e6:.1f}M" if abs(_v)>=1e6
+                                   else f"{_v/1e3:.0f}K" if abs(_v)>=1e3 else f"{_v:,.2f}")
+                        _mkpis[_kn] = {"value": round(_v,4), "value_fmt": _vf}
+                    except Exception:
+                        pass
+                dim_member_kpis_preview[_dim][str(_member)] = _mkpis
+    except Exception:
+        dim_member_kpis_preview = {}
+
     # ── Flatten drivers to a list for backward-compat with callers ────────── #
     # Callers (build_live_narrative, generate_svg_preview) expect either:
     #   - flat list [{dimension, member, delta, ...}]  (old format)
@@ -2539,9 +2612,11 @@ def compute_preview_metrics_v2(
 
     payload = snapshot.to_dict()   # already has reference_date, window_start,
                                    # timeframe, kpis (with value_fmt, mom_pct etc.)
-    payload["drivers"]             = drivers_raw   # dict {kpi_name: [DriverItem dicts]}
+    payload["drivers"]             = drivers_raw
     payload["trend_series"]        = trend_series
     payload["monthly_revenue_12m"] = monthly_revenue_12m
+    payload["per_kpi_series"]      = per_kpi_series_preview
+    payload["dim_member_kpis"]     = dim_member_kpis_preview
     payload["timeframe_key"]       = timeframe_key
 
     # ── Target / Achievement KPIs (optional) ──────────────────────────────── #
@@ -2932,6 +3007,8 @@ def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
         "drivers":             drivers_dict,
         "daily_sales_30d":     metrics.get("trend_series", []),
         "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
+        "per_kpi_series":      metrics.get("per_kpi_series", {}),
+        "dim_member_kpis":     metrics.get("dim_member_kpis", {}),
     }
     cfg = {
         "llm": {
@@ -3014,6 +3091,8 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
         "drivers":             drivers_dict,
         "daily_sales_30d":     metrics.get("trend_series", []),
         "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
+        "per_kpi_series":      metrics.get("per_kpi_series", {}),
+        "dim_member_kpis":     metrics.get("dim_member_kpis", {}),
     }
 
     mod_role = dict(role_cfg)
