@@ -2542,7 +2542,8 @@ def compute_preview_metrics_v2(
         _df_pks = _df_pks[(_df_pks["_date"] >= _thirty_ago) & (_df_pks["_date"] <= ref)]
         per_kpi_dates_preview = [str(d) for d in sorted(_df_pks["_date"].unique().tolist())]
         for _kc in kpis_cfg:
-            _kn = _kc.get("name","") or _kc.get("label","")
+            # wizard uses "user_name"; agent config uses "name"; fallback to "label"
+            _kn = _kc.get("name","") or _kc.get("user_name","") or _kc.get("label","")
             _col = _kc.get("column","") or _kc.get("num_col","")
             _agg = _kc.get("agg","sum")
             _num = _kc.get("num_col",""); _den = _kc.get("den_col","")
@@ -2552,7 +2553,7 @@ def compute_preview_metrics_v2(
                 if _agg == "sum" and _col in _df_pks.columns:
                     _s = _df_pks.groupby("_date")[_col].sum().sort_index()
                     per_kpi_series_preview[_kn] = [round(float(v)*_sc, 4) for v in _s.values]
-                elif _agg == "avg" and _col in _df_pks.columns:
+                elif _agg in ("avg", "mean") and _col in _df_pks.columns:
                     _s = _df_pks.groupby("_date")[_col].mean().sort_index()
                     per_kpi_series_preview[_kn] = [round(float(v)*_sc, 4) for v in _s.values]
                 elif _agg in ("ratio","pct") and _num in _df_pks.columns and _den in _df_pks.columns:
@@ -2590,7 +2591,7 @@ def compute_preview_metrics_v2(
             try:
                 if agg == "sum" and col in df_s.columns:
                     return float(df_s[col].sum()) * sc
-                if agg == "avg" and col in df_s.columns and len(df_s) > 0:
+                if agg in ("avg", "mean") and col in df_s.columns and len(df_s) > 0:
                     return float(df_s[col].mean()) * sc
                 if agg in ("ratio","pct") and num in df_s.columns and den in df_s.columns:
                     n = float(df_s[num].sum()); d = float(df_s[den].sum())
@@ -2610,7 +2611,7 @@ def compute_preview_metrics_v2(
                          if _dim in _df_py_dm.columns else pd.DataFrame()
                 _mkpis: dict = {}
                 for _kc in kpis_cfg:
-                    _kn  = _kc.get("name","") or _kc.get("label","")
+                    _kn  = _kc.get("name","") or _kc.get("user_name","") or _kc.get("label","")
                     _col = _kc.get("column","")
                     _agg = _kc.get("agg","sum")
                     _num = _kc.get("num_col",""); _den = _kc.get("den_col","")
