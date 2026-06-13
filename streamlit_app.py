@@ -2528,6 +2528,12 @@ def compute_preview_metrics_v2(
         monthly_revenue_12m = {"labels": [], "values": [], "col": _spark_col_global}
 
     # ── Per-KPI time series (scorecard: each tile shows its own KPI sparkline) ── #
+    # Ensure _thirty_ago / ref are always defined regardless of whether sparkline succeeded
+    try:
+        _ = _thirty_ago  # noqa: F821 — defined in sparkline try block above
+    except NameError:
+        _thirty_ago = ref - timedelta(days=29)
+
     per_kpi_series_preview: dict = {}
     try:
         _df_pks = df.copy()
