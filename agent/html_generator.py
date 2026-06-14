@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-11-v5"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v20"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -574,7 +574,7 @@ def _chart_bar_v(cid: str, labels: list, values: list, accent: str, pal: dict) -
                     x:{{ ticks:{{ color:'{tc}', font:{{size:9}}, maxRotation:30 }},
                          grid:{{display:false}}, border:{{display:false}} }},
                     y:{{ ticks:{{ color:'{tc}', font:{{size:8}} }},
-                         grid:{{ color:'{pal["border"]}' }}, border:{{display:false}} }}
+                         grid:{{display:false}}, border:{{display:false}} }}
                 }},
                 animation:{{duration:300}} }}
         }});
@@ -601,12 +601,19 @@ def _chart_line_trend(cid: str, values: list, accent: str, pal: dict,
                 backgroundColor:'{accent}22', tension:0.35
             }}] }},
             options:{{ responsive:true, maintainAspectRatio:false,
-                plugins:{{ legend:{{display:false}} }},
+                plugins:{{ legend:{{display:false}},
+                    tooltip:{{ mode:'index', intersect:false,
+                        callbacks:{{ label: function(ctx) {{
+                            var v = ctx.raw;
+                            return v>=1e6?'$'+(v/1e6).toFixed(2)+'M':
+                                   v>=1e3?'$'+(v/1e3).toFixed(1)+'K':
+                                   v.toFixed(2);
+                        }} }} }} }},
                 scales:{{
                     x:{{ ticks:{{ color:'{tc}', font:{{size:8}}, maxTicksLimit:6 }},
                          grid:{{display:false}}, border:{{display:false}} }},
                     y:{{ ticks:{{ color:'{tc}', font:{{size:8}} }},
-                         grid:{{ color:'{pal["border"]}' }}, border:{{display:false}} }}
+                         grid:{{display:false}}, border:{{display:false}} }}
                 }},
                 animation:{{duration:0}} }}
         }});
@@ -649,7 +656,7 @@ def _chart_waterfall(cid: str, labels: list, floats: list,
                          ticks:{{ color:'{tc}', font:{{size:8}},
                              callback: v => v>=1e6?'$'+(v/1e6).toFixed(0)+'M':
                                           v>=1e3?'$'+(v/1e3).toFixed(0)+'K':v }},
-                         grid:{{ color:'{pal["border"]}' }}, border:{{display:false}} }}
+                         grid:{{display:false}}, border:{{display:false}} }}
                 }},
                 animation:{{duration:0}} }}
         }});
@@ -671,13 +678,10 @@ def _donut_data_from_drivers(all_drivers: list, top_n: int = 5):
                 or d.get("current")
                 or abs(d.get("delta") or 0))
 
-    # Filter to dimension members that have a meaningful value
+    # Filter to dimension members that have a meaningful value, sort by size
+    # (Use all candidates — donut shows proportion/contribution, not momentum)
     candidates = [d for d in all_drivers if _seg_val(d) > 0]
-
-    # Prefer members with positive momentum for a "contribution" donut;
-    # fall back to all candidates sorted by absolute size
-    pos = [d for d in candidates if (d.get("delta") or 0) >= 0]
-    items = sorted(pos or candidates, key=_seg_val, reverse=True)[:top_n]
+    items = sorted(candidates, key=_seg_val, reverse=True)[:top_n]
 
     labels = [str(d.get("member", "?"))[:18] for d in items]
     values = [round(_seg_val(d), 2) for d in items]
@@ -1062,13 +1066,31 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
     sparkline   = payload.get("daily_sales_30d",[])
     monthly_12m = payload.get("monthly_revenue_12m", {})
     dim_gs      = _dim_groups(all_drivers, 4, 8)
+    dim_member_kpis = payload.get("dim_member_kpis", {})
     # Trend chart label: use the revenue column name if available, else primary KPI
     _trend_col  = monthly_12m.get("col", "") or ""
     _trend_title = f"Revenue — Monthly (12M)" if _trend_col else f"Trend — {prim}"
 
+    # ─ Filter panel (below masthead, above heading) ───────────────────────── #
+    filter_dims_src = dim_member_kpis if dim_member_kpis else {d: dim_gs[d] for d in dim_gs}
+    fp_html = ""
+    if filter_dims_src:
+        sels = ""
+        for dim in list(filter_dims_src.keys()):
+            if dim in dim_gs:
+                members = dim_gs[dim]["labels"]
+            else:
+                members = sorted(filter_dims_src[dim].keys(), key=str)
+            opts  = f'<option value="All">{_e(dim)}: All</option>'
+            opts += "".join(f'<option value="{_e(m)}">{_e(m)}</option>' for m in members)
+            sels += (f'<select class="filter-sel" data-dim="{_e(dim)}" '
+                     f'onchange="ariaFilter(this)">{opts}</select> ')
+        fp_html = (f'<div class="filter-panel" style="margin:8px 0 10px">'
+                   f'<span class="filter-lbl">View by</span> {sels}</div>')
+
     # ─ Mini KPI row ──────────────────────────────────────────────────────── #
     mini_tiles = ""
-    for kn in show_kpis:
+    for i, kn in enumerate(show_kpis):
         kd   = kpis[kn]
         val  = _e(kd.get("value_fmt","—"))
         ms, mc = _fmt_pct(kd.get("mom_pct"))
@@ -1077,9 +1099,9 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
         mini_tiles += f"""
 <div class="mkpi" style="border-top:2px solid {rag}">
   <div class="mkpi-name">{_e(kn)}</div>
-  <div class="mkpi-val">{val}</div>
-  <div class="mkpi-d" style="color:{mc}">{_e(ms)} MoM</div>
-  <div class="mkpi-d" style="color:{yc}">{_e(ys)} YoY</div>
+  <div class="mkpi-val" id="ds_kv_{i}" data-orig="{val}">{val}</div>
+  <div class="mkpi-d" id="ds_md_{i}" data-orig="{_e(ms)} MoM" data-oc="{mc}" style="color:{mc}">{_e(ms)} MoM</div>
+  <div class="mkpi-d" id="ds_yd_{i}" data-orig="{_e(ys)} YoY" data-oc="{yc}" style="color:{yc}">{_e(ys)} YoY</div>
 </div>"""
 
     # ─ Chart grid ────────────────────────────────────────────────────────── #
@@ -1153,7 +1175,8 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
 
     return f"""
 <div class="card">
-  {_masthead(payload, role, pal, accent, filter_html=_filter_panel(dim_gs))}
+  {_masthead(payload, role, pal, accent)}
+  {fp_html}
   <div class="sec">Analytics Dossier</div>
   <div class="mkpi-row">{mini_tiles}</div>
   {chart_grid}
@@ -1332,46 +1355,79 @@ function ariaFilter(sel) {{
 }}
 """
     elif tmpl_key == "dossier":
-        bar_id    = "ds_dimbar"
-        title_id  = "ds-dim-title"
-        accent_e  = accent
+        ds_role_kpis = role.get("kpis", list(kpis.keys()))
+        ds_show_kpis = ([k for k in ds_role_kpis if k in kpis] or list(kpis.keys()))[:5]
+        ds_kpi_order_js  = json.dumps(ds_show_kpis)
+        ds_dim_member_js = json.dumps(payload.get("dim_member_kpis", {}))
         palette_js = json.dumps(_PALETTE8)
         filter_js = f"""
-var ARIA_ACCENT    = '{accent_e}';
-var ARIA_PALETTE   = {palette_js};
-var ARIA_DIM_DATA  = {dim_data_json};
+var ARIA_DS_KPIS         = {ds_kpi_order_js};
+var ARIA_DIM_MEMBER_KPIS = {ds_dim_member_js};
+var ARIA_ACCENT          = '{accent}';
+var ARIA_PALETTE         = {palette_js};
+var ARIA_DIM_DATA        = {dim_data_json};
+
+function _ariaPct(p) {{
+    if (p === null || p === undefined) return {{text:'—', color:'#888'}};
+    var s = p >= 0 ? '▲' : '▼';
+    var c = p >= 0 ? '#34D399' : '#F87171';
+    return {{text: s + ' ' + Math.abs(p).toFixed(1) + '%', color: c}};
+}}
+
 function ariaFilter(sel) {{
     var dim = sel.getAttribute('data-dim');
     var val = sel.value;
-    var d   = ARIA_DIM_DATA[dim];
-    if (!d) return;
-    var chart = ARIA_CHARTS['{bar_id}'];
-    if (chart) {{
-        chart.data.labels = d.labels;
-        chart.data.datasets[0].data = d.values;
-        if (val === 'All') {{
-            chart.data.datasets[0].backgroundColor =
-                d.labels.map(function(l, i) {{ return ARIA_PALETTE[i % ARIA_PALETTE.length]; }});
-        }} else {{
-            chart.data.datasets[0].backgroundColor =
-                d.labels.map(function(l) {{
-                    return (l === val) ? ARIA_ACCENT : ARIA_ACCENT + '28';
-                }});
+
+    /* ── 1. Update KPI mini tiles ── */
+    var mData = (val === 'All') ? null :
+                ((ARIA_DIM_MEMBER_KPIS[dim] || {{}})[val] || null);
+    ARIA_DS_KPIS.forEach(function(kn, i) {{
+        var kd = mData ? (mData[kn] || null) : null;
+        var ve = document.getElementById('ds_kv_' + i);
+        if (ve) ve.textContent = kd ? (kd.value_fmt || ve.getAttribute('data-orig'))
+                                    : ve.getAttribute('data-orig');
+        var me = document.getElementById('ds_md_' + i);
+        if (me) {{
+            if (kd && kd.mom_pct !== undefined && kd.mom_pct !== null) {{
+                var rm = _ariaPct(kd.mom_pct);
+                me.textContent = rm.text + ' MoM'; me.style.color = rm.color;
+            }} else {{
+                me.textContent = me.getAttribute('data-orig') || '— MoM';
+                me.style.color = me.getAttribute('data-oc') || '#888';
+            }}
         }}
-        chart.update('none');
-        var t = document.getElementById('{title_id}');
-        if (t) t.textContent = dim + ' Breakdown' + (val !== 'All' ? ' • ' + val : '');
-    }}
-    // Update filter chip (dossier keeps chips for visual context)
-    var existingChip = sel.parentNode.querySelector('.filter-chip[data-dim="' + dim + '"]');
-    if (existingChip) existingChip.remove();
-    if (val !== 'All') {{
-        var chip = document.createElement('span');
-        chip.className = 'filter-chip';
-        chip.setAttribute('data-dim', dim);
-        chip.style.display = 'inline-block';
-        chip.textContent = dim + ': ' + val;
-        sel.parentNode.insertBefore(chip, sel.nextSibling);
+        var ye = document.getElementById('ds_yd_' + i);
+        if (ye) {{
+            if (kd && kd.yoy_pct !== undefined && kd.yoy_pct !== null) {{
+                var ry = _ariaPct(kd.yoy_pct);
+                ye.textContent = ry.text + ' YoY'; ye.style.color = ry.color;
+            }} else {{
+                ye.textContent = ye.getAttribute('data-orig') || '— YoY';
+                ye.style.color = ye.getAttribute('data-oc') || '#888';
+            }}
+        }}
+    }});
+
+    /* ── 2. Update dimension bar chart ── */
+    var d = ARIA_DIM_DATA[dim];
+    if (d) {{
+        var chart = ARIA_CHARTS['ds_dimbar'];
+        if (chart) {{
+            chart.data.labels = d.labels;
+            chart.data.datasets[0].data = d.values;
+            if (val === 'All') {{
+                chart.data.datasets[0].backgroundColor =
+                    d.labels.map(function(l, idx) {{ return ARIA_PALETTE[idx % ARIA_PALETTE.length]; }});
+            }} else {{
+                chart.data.datasets[0].backgroundColor =
+                    d.labels.map(function(l) {{
+                        return (l === val) ? ARIA_ACCENT : ARIA_ACCENT + '28';
+                    }});
+            }}
+            chart.update('none');
+            var t = document.getElementById('ds-dim-title');
+            if (t) t.textContent = dim + ' Breakdown' + (val !== 'All' ? ' • ' + val : '');
+        }}
     }}
 }}
 """
@@ -1414,7 +1470,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-13-v19 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v20 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
