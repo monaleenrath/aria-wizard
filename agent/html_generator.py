@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v20"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v21"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -1144,7 +1144,7 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
   <div class="chart-box" style="height:{ch_h}px;flex:0 0 {ch_h}px">
     <canvas id="ds_donut"></canvas>
   </div>
-  <div style="flex:1;overflow:hidden;padding-top:8px">{legend}</div>
+  <div id="ds-donut-legend" style="flex:1;overflow:hidden;padding-top:8px">{legend}</div>
 </div>"""
     else:
         donut_html = f'<div style="height:{ch_h}px;display:flex;align-items:center;justify-content:center;color:{pal["muted"]};font-size:10px">No breakdown data</div>'
@@ -1164,11 +1164,11 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
     {dim_bar_html}
   </div>
   <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
-    <div class="sec">Contribution Mix</div>
+    <div id="ds-donut-title" class="sec">Contribution Mix</div>
     {donut_html}
   </div>
   <div style="background:{pal['surface']};border:1px solid {pal['border']};border-radius:8px;padding:12px">
-    <div class="sec">Period-over-Period Waterfall</div>
+    <div id="ds-wfall-title" class="sec">Period-over-Period Waterfall</div>
     {waterfall_html}
   </div>
 </div>"""
@@ -1359,13 +1359,44 @@ function ariaFilter(sel) {{
         ds_show_kpis = ([k for k in ds_role_kpis if k in kpis] or list(kpis.keys()))[:5]
         ds_kpi_order_js  = json.dumps(ds_show_kpis)
         ds_dim_member_js = json.dumps(payload.get("dim_member_kpis", {}))
-        palette_js = json.dumps(_PALETTE8)
+        palette_js       = json.dumps(_PALETTE8)
+        # Monthly trend data for line chart restore
+        _ds_monthly      = payload.get("monthly_revenue_12m", {})
+        _ds_m_vals       = _ds_monthly.get("values", [])
+        _ds_m_labels     = _ds_monthly.get("labels", [])
+        monthly_vals_js   = json.dumps([round(v, 2) for v in _ds_m_vals])
+        monthly_labels_js = json.dumps(_ds_m_labels)
+        # Prior / current primary KPI values for waterfall rebuild
+        _prim_kd   = kpis.get(prim_real, {})
+        _curr_val  = _prim_kd.get("value", 0) or 0
+        _mom_pct   = _prim_kd.get("mom_pct", 0) or 0
+        _prior_val = _curr_val / (1 + _mom_pct) if (1 + _mom_pct) != 0 else _curr_val
+        # Dim drivers: {dim: [{member, delta, value}]} — for waterfall
+        _dim_drivers: dict = {}
+        for _drv in all_drivers:
+            _dn = _drv.get("dimension", ""); _dm = _drv.get("member", "")
+            if not _dn or not _dm: continue
+            _dim_drivers.setdefault(_dn, []).append({
+                "member": _dm,
+                "delta":  round(_drv.get("delta", 0) or 0, 2),
+                "value":  round(_drv.get("value", 0) or _drv.get("current", 0) or 0, 2),
+            })
+        dim_drivers_js = json.dumps(_dim_drivers)
+        _tc  = pal["muted"]
+        _sub = pal["subtext"]
         filter_js = f"""
 var ARIA_DS_KPIS         = {ds_kpi_order_js};
 var ARIA_DIM_MEMBER_KPIS = {ds_dim_member_js};
 var ARIA_ACCENT          = '{accent}';
 var ARIA_PALETTE         = {palette_js};
 var ARIA_DIM_DATA        = {dim_data_json};
+var ARIA_DIM_DRIVERS     = {dim_drivers_js};
+var _ARIA_MONTHLY_LABELS = {monthly_labels_js};
+var _ARIA_MONTHLY_VALUES = {monthly_vals_js};
+var _ARIA_PRIOR_VAL      = {round(_prior_val, 2)};
+var _ARIA_CURR_VAL       = {round(_curr_val, 2)};
+var _ARIA_TC             = '{_tc}';
+var _ARIA_SUB            = '{_sub}';
 
 function _ariaPct(p) {{
     if (p === null || p === undefined) return {{text:'—', color:'#888'}};
@@ -1373,12 +1404,15 @@ function _ariaPct(p) {{
     var c = p >= 0 ? '#34D399' : '#F87171';
     return {{text: s + ' ' + Math.abs(p).toFixed(1) + '%', color: c}};
 }}
+function _fmtVal(v) {{
+    return v>=1e6?'$'+(v/1e6).toFixed(2)+'M':v>=1e3?'$'+(v/1e3).toFixed(1)+'K':v.toFixed(2);
+}}
 
 function ariaFilter(sel) {{
     var dim = sel.getAttribute('data-dim');
     var val = sel.value;
 
-    /* ── 1. Update KPI mini tiles ── */
+    /* ── 1. KPI mini tiles ── */
     var mData = (val === 'All') ? null :
                 ((ARIA_DIM_MEMBER_KPIS[dim] || {{}})[val] || null);
     ARIA_DS_KPIS.forEach(function(kn, i) {{
@@ -1389,44 +1423,120 @@ function ariaFilter(sel) {{
         var me = document.getElementById('ds_md_' + i);
         if (me) {{
             if (kd && kd.mom_pct !== undefined && kd.mom_pct !== null) {{
-                var rm = _ariaPct(kd.mom_pct);
-                me.textContent = rm.text + ' MoM'; me.style.color = rm.color;
-            }} else {{
-                me.textContent = me.getAttribute('data-orig') || '— MoM';
-                me.style.color = me.getAttribute('data-oc') || '#888';
-            }}
+                var rm = _ariaPct(kd.mom_pct); me.textContent = rm.text+' MoM'; me.style.color = rm.color;
+            }} else {{ me.textContent = me.getAttribute('data-orig')||'— MoM'; me.style.color = me.getAttribute('data-oc')||'#888'; }}
         }}
         var ye = document.getElementById('ds_yd_' + i);
         if (ye) {{
             if (kd && kd.yoy_pct !== undefined && kd.yoy_pct !== null) {{
-                var ry = _ariaPct(kd.yoy_pct);
-                ye.textContent = ry.text + ' YoY'; ye.style.color = ry.color;
-            }} else {{
-                ye.textContent = ye.getAttribute('data-orig') || '— YoY';
-                ye.style.color = ye.getAttribute('data-oc') || '#888';
-            }}
+                var ry = _ariaPct(kd.yoy_pct); ye.textContent = ry.text+' YoY'; ye.style.color = ry.color;
+            }} else {{ ye.textContent = ye.getAttribute('data-orig')||'— YoY'; ye.style.color = ye.getAttribute('data-oc')||'#888'; }}
         }}
     }});
 
-    /* ── 2. Update dimension bar chart ── */
+    /* ── 2. Bar chart — switch dim, highlight member ── */
     var d = ARIA_DIM_DATA[dim];
     if (d) {{
-        var chart = ARIA_CHARTS['ds_dimbar'];
-        if (chart) {{
-            chart.data.labels = d.labels;
-            chart.data.datasets[0].data = d.values;
-            if (val === 'All') {{
-                chart.data.datasets[0].backgroundColor =
-                    d.labels.map(function(l, idx) {{ return ARIA_PALETTE[idx % ARIA_PALETTE.length]; }});
-            }} else {{
-                chart.data.datasets[0].backgroundColor =
-                    d.labels.map(function(l) {{
-                        return (l === val) ? ARIA_ACCENT : ARIA_ACCENT + '28';
-                    }});
+        var barChart = ARIA_CHARTS['ds_dimbar'];
+        if (barChart) {{
+            barChart.data.labels = d.labels;
+            barChart.data.datasets[0].data = d.values;
+            barChart.data.datasets[0].backgroundColor = (val === 'All')
+                ? d.labels.map(function(l, idx) {{ return ARIA_PALETTE[idx % ARIA_PALETTE.length]; }})
+                : d.labels.map(function(l) {{ return l === val ? ARIA_ACCENT : ARIA_ACCENT+'28'; }});
+            barChart.update('none');
+            var bt = document.getElementById('ds-dim-title');
+            if (bt) bt.textContent = dim+' Breakdown'+(val!=='All'?' • '+val:'');
+        }}
+    }}
+
+    /* ── 3. Donut — switch to selected dim's contribution mix ── */
+    if (d) {{
+        var donutChart = ARIA_CHARTS['ds_donut'];
+        if (donutChart) {{
+            var dColors = d.labels.map(function(l, idx) {{
+                var base = ARIA_PALETTE[idx % ARIA_PALETTE.length];
+                return (val !== 'All' && l !== val) ? base+'55' : base;
+            }});
+            donutChart.data.labels = d.labels;
+            donutChart.data.datasets[0].data = d.values;
+            donutChart.data.datasets[0].backgroundColor = dColors;
+            donutChart.update('none');
+            var dt = document.getElementById('ds-donut-title');
+            if (dt) dt.textContent = dim+' Mix'+(val!=='All'?' • '+val:'');
+            var dl = document.getElementById('ds-donut-legend');
+            if (dl) {{
+                dl.innerHTML = d.labels.map(function(l, idx) {{
+                    var c = ARIA_PALETTE[idx % ARIA_PALETTE.length];
+                    return '<div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">'
+                         + '<div style="width:7px;height:7px;border-radius:50%;background:'+c+';flex-shrink:0"></div>'
+                         + '<div style="font-size:8px;color:'+_ARIA_SUB+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100px">'
+                         + l.substring(0,18)+'</div></div>';
+                }}).join('');
             }}
-            chart.update('none');
-            var t = document.getElementById('ds-dim-title');
-            if (t) t.textContent = dim + ' Breakdown' + (val !== 'All' ? ' • ' + val : '');
+        }}
+    }}
+
+    /* ── 4. Waterfall — rebuild from single-dim driver deltas ── */
+    var drvs = ARIA_DIM_DRIVERS[dim] || [];
+    var lifts = drvs.filter(function(x){{return x.delta>0;}}).sort(function(a,b){{return b.delta-a.delta;}}).slice(0,3);
+    var drags = drvs.filter(function(x){{return x.delta<0;}}).sort(function(a,b){{return a.delta-b.delta;}}).slice(0,2);
+    var steps = lifts.concat(drags);
+    var wfLabels=['Prior'], wfData=[[0,Math.round(_ARIA_PRIOR_VAL*100)/100]], wfColors=['#60A5FA'], cum=_ARIA_PRIOR_VAL;
+    steps.forEach(function(s) {{
+        var hi = (val!=='All' && s.member===val);
+        wfLabels.push(s.member.substring(0,12));
+        wfData.push([Math.round(cum*100)/100, Math.round((cum+s.delta)*100)/100]);
+        wfColors.push(s.delta>=0 ? (hi?'#10B981':'#34D399') : (hi?'#EF4444':'#F87171'));
+        cum += s.delta;
+    }});
+    wfLabels.push('Current'); wfData.push([0,Math.round(_ARIA_CURR_VAL*100)/100]); wfColors.push('#60A5FA');
+    var wfChart = ARIA_CHARTS['ds_wfall'];
+    if (wfChart) {{
+        wfChart.data.labels = wfLabels;
+        wfChart.data.datasets[0].data = wfData;
+        wfChart.data.datasets[0].backgroundColor = wfColors;
+        wfChart.update('none');
+        var wt = document.getElementById('ds-wfall-title');
+        if (wt) wt.textContent = dim+' Waterfall'+(val!=='All'?' • '+val:'');
+    }}
+
+    /* ── 5. Line chart — monthly line (All) or dim ranking bar (member) ── */
+    var lineCtx = document.getElementById('ds_trend');
+    var lt = document.getElementById('ds-trend-title');
+    if (lineCtx) {{
+        if (ARIA_CHARTS['ds_trend']) {{ ARIA_CHARTS['ds_trend'].destroy(); delete ARIA_CHARTS['ds_trend']; }}
+        if (val === 'All' && _ARIA_MONTHLY_LABELS.length >= 3) {{
+            if (lt) lt.textContent = 'Revenue — Monthly (12M)';
+            ARIA_CHARTS['ds_trend'] = new Chart(lineCtx, {{
+                type:'line',
+                data:{{labels:_ARIA_MONTHLY_LABELS, datasets:[{{
+                    data:_ARIA_MONTHLY_VALUES, borderColor:ARIA_ACCENT, borderWidth:2,
+                    pointRadius:0, fill:true, backgroundColor:ARIA_ACCENT+'22', tension:0.35
+                }}]}},
+                options:{{responsive:true, maintainAspectRatio:false,
+                    plugins:{{legend:{{display:false}},
+                        tooltip:{{mode:'index',intersect:false,
+                            callbacks:{{label:function(ctx){{return _fmtVal(ctx.raw);}}}}}}}},
+                    scales:{{
+                        x:{{ticks:{{color:_ARIA_TC,font:{{size:8}},maxTicksLimit:6}},grid:{{display:false}},border:{{display:false}}}},
+                        y:{{ticks:{{color:_ARIA_TC,font:{{size:8}}}},grid:{{display:false}},border:{{display:false}}}}
+                    }}, animation:{{duration:300}}}}
+            }});
+        }} else if (d) {{
+            if (lt) lt.textContent = dim+' Ranking'+(val!=='All'?' • '+val:'');
+            var bgRank = d.labels.map(function(l){{ return l===val ? ARIA_ACCENT : ARIA_ACCENT+'44'; }});
+            ARIA_CHARTS['ds_trend'] = new Chart(lineCtx, {{
+                type:'bar',
+                data:{{labels:d.labels, datasets:[{{data:d.values, backgroundColor:bgRank, borderRadius:3, borderWidth:0}}]}},
+                options:{{indexAxis:'y', responsive:true, maintainAspectRatio:false,
+                    plugins:{{legend:{{display:false}},
+                        tooltip:{{callbacks:{{label:function(ctx){{return _fmtVal(ctx.raw);}}}}}}}},
+                    scales:{{
+                        x:{{ticks:{{color:_ARIA_TC,font:{{size:8}}}},grid:{{display:false}},border:{{display:false}}}},
+                        y:{{ticks:{{color:_ARIA_TC,font:{{size:8}}}},grid:{{display:false}},border:{{display:false}}}}
+                    }}, animation:{{duration:300}}}}
+            }});
         }}
     }}
 }}
@@ -1470,7 +1580,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v20 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v21 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
