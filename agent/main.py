@@ -227,19 +227,17 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         _cfg_dims = config.get("drivers", {}).get("dimensions", [])
         _cfg_kpis = config.get("metrics", {}).get("kpis", [])
 
-        # If config has no driver dims (e.g. older config.yaml), auto-detect
-        # dimension columns from the dataframe (same logic as preview)
+        # If config has no driver dims, reuse effective_dims from driver analysis
+        # (already auto-detected by analyze_drivers — more reliable than re-deriving)
         if not _cfg_dims:
-            _kpi_cols = {k.get("column","") for k in _cfg_kpis} | \
-                        {k.get("num_col","") for k in _cfg_kpis} | \
-                        {k.get("den_col","") for k in _cfg_kpis}
-            _kpi_cols.discard("")
-            _date_like = {"date","time","year","month","quarter","week","day"}
-            _cfg_dims = [c for c in _df_curr.columns
-                         if _df_curr[c].dtype == object
-                         and _df_curr[c].nunique() <= 20
-                         and c not in _kpi_cols
-                         and not any(d in c.lower() for d in _date_like)][:4]
+            _eff = _yoy_diag.get("effective_dims", [])
+            # Keep dims that exist in the current df AND have ≤8 unique values
+            # (filters out high-cardinality ID cols like Store ID / Store Name)
+            _cfg_dims = [d for d in _eff
+                         if d in _df_curr.columns
+                         and _df_curr[d].nunique() <= 8][:4]
+            log.info("dim_member_kpis auto-dims (from yoy_diag.effective_dims): %s",
+                     _cfg_dims)
 
         def _kpi_val_for_subset(df_sub, kpi_cfg, df_pm=None, df_py=None):
             col = kpi_cfg.get("column",""); agg = kpi_cfg.get("agg","sum")
@@ -302,7 +300,9 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
                     if _res: _mkpis[_kn] = _res
                 dim_member_kpis[_dim][str(_member)] = _mkpis
     except Exception:
+        log.exception("dim_member_kpis computation failed — filter will be inactive")
         dim_member_kpis = {}
+        _cfg_dims = []   # ensure variable exists for debug dict below
 
     payload = {
         **snapshot.to_dict(),
@@ -315,7 +315,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         "dim_member_kpis":     dim_member_kpis,
         "_aria_debug": {
             "da_ver": DRIVER_ANALYSIS_VERSION,
-            "cfg_dims": config.get("drivers", {}).get("dimensions", []),
+            "cfg_dims": _cfg_dims,   # actual dims used (after auto-detect fallback)
             "df_cols": list(df.columns),
             "df_shape": [int(df.shape[0]), int(df.shape[1])],
             "kpi_map": [
