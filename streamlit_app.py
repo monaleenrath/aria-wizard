@@ -2656,6 +2656,33 @@ def compute_preview_metrics_v2(
     except Exception:
         dim_member_kpis_preview = {}
 
+    # ── Per-dimension-member monthly revenue series (dossier 12M trend filter) ── #
+    # Structure: {dim: {member: {values: [...], labels: [...]}}}
+    dim_member_monthly_preview: dict = {}
+    try:
+        if _spark_col_global and _spark_col_global in df.columns:
+            _df_mmw = df.copy()
+            _df_mmw["_month"] = pd.to_datetime(_df_mmw[date_col], errors="coerce").dt.to_period("M")
+            _df_mmw = _df_mmw.dropna(subset=["_month"])
+            for _dim_mmw in list(dim_member_kpis_preview.keys()):
+                if _dim_mmw not in _df_mmw.columns:
+                    continue
+                dim_member_monthly_preview[_dim_mmw] = {}
+                for _mem_mmw in sorted(_df_mmw[_dim_mmw].dropna().unique().tolist(), key=str):
+                    _df_m_mmw = _df_mmw[_df_mmw[_dim_mmw] == _mem_mmw]
+                    _monthly_mw = (
+                        _df_m_mmw.groupby("_month")[_spark_col_global]
+                        .sum()
+                        .sort_index()
+                        .tail(12)
+                    )
+                    dim_member_monthly_preview[_dim_mmw][str(_mem_mmw)] = {
+                        "labels": [str(p) for p in _monthly_mw.index],
+                        "values": [round(float(v), 2) for v in _monthly_mw.values],
+                    }
+    except Exception:
+        dim_member_monthly_preview = {}
+
     # ── Per-dimension-member KPI time series (scorecard sparkline filter) ──── #
     # Structure: {dim: {member: {kpi_name: [series_values]}}}
     dim_member_per_kpi_series_preview: dict = {}
@@ -2715,6 +2742,7 @@ def compute_preview_metrics_v2(
     payload["per_kpi_dates"]             = per_kpi_dates_preview
     payload["dim_member_kpis"]           = dim_member_kpis_preview
     payload["dim_member_per_kpi_series"] = dim_member_per_kpi_series_preview
+    payload["dim_member_monthly"]        = dim_member_monthly_preview
     payload["timeframe_key"]       = timeframe_key
 
     # ── Target / Achievement KPIs (optional) ──────────────────────────────── #
@@ -3109,6 +3137,7 @@ def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
         "per_kpi_dates":             metrics.get("per_kpi_dates", []),
         "dim_member_kpis":           metrics.get("dim_member_kpis", {}),
         "dim_member_per_kpi_series": metrics.get("dim_member_per_kpi_series", {}),
+        "dim_member_monthly":        metrics.get("dim_member_monthly", {}),
     }
     cfg = {
         "llm": {
@@ -3196,6 +3225,7 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
         "per_kpi_dates":             metrics.get("per_kpi_dates", []),
         "dim_member_kpis":           metrics.get("dim_member_kpis", {}),
         "dim_member_per_kpi_series": metrics.get("dim_member_per_kpi_series", {}),
+        "dim_member_monthly":        metrics.get("dim_member_monthly", {}),
     }
 
     mod_role = dict(role_cfg)
