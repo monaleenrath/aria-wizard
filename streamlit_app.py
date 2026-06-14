@@ -2483,6 +2483,14 @@ def compute_preview_metrics_v2(
     except Exception:
         drivers_raw = {}
 
+    # DoD drivers as fallback — ensures bar chart + selector pills appear even
+    # when YoY comparison fails (e.g. dataset covers less than one year).
+    try:
+        drivers_dod_obj = analyze_drivers(df, config, ref, compare_to="dod")
+        drivers_dod_raw = drivers_to_dict(drivers_dod_obj)
+    except Exception:
+        drivers_dod_raw = {}
+
     # ── Sparkline — 30-day daily series for the primary KPI ──────────────── #
     trend_series: list = []
     _spark_col_global = ""
@@ -2661,6 +2669,7 @@ def compute_preview_metrics_v2(
     payload = snapshot.to_dict()   # already has reference_date, window_start,
                                    # timeframe, kpis (with value_fmt, mom_pct etc.)
     payload["drivers"]             = drivers_raw
+    payload["drivers_dod"]        = drivers_dod_raw
     payload["trend_series"]        = trend_series
     payload["monthly_revenue_12m"] = monthly_revenue_12m
     payload["per_kpi_series"]      = per_kpi_series_preview
@@ -3139,6 +3148,7 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
         "timeframe":       metrics.get("timeframe", metrics.get("timeframe_key", "1d")),
         "kpis":                role_kpis_filtered,
         "drivers":             drivers_dict,
+        "drivers_dod":         metrics.get("drivers_dod", {}),
         "daily_sales_30d":     metrics.get("trend_series", []),
         "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
         "per_kpi_series":      metrics.get("per_kpi_series", {}),
