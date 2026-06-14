@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v22"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v23"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -893,7 +893,6 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
     prim, kpis, all_drivers = _resolve_kpis(payload, role)
     role_kpis   = role.get("kpis", list(kpis.keys()))
     tier        = _role_tier(role)
-    sparkline   = payload.get("daily_sales_30d",[])
 
     pk     = kpis.get(prim, {})
     pval   = _e(pk.get("value_fmt","—"))
@@ -906,38 +905,37 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
     sub_1st  = (sub.split(".")[0]+".") if "." in sub else sub[:120]
 
     # Domain icon
-    icon_html = _domain_icon_svg(role, accent, 64)
+    icon_html = _domain_icon_svg(role, accent, 48)
 
-    # Stat highlights for hero strip
-    def _pill(label, val, color):
+    # Primary KPI — right tall box (MoM / YoY as bordered pill boxes)
+    def _kpi_pill_box(label, val, color):
         if val == "—": return ""
-        return (f'<div style="display:inline-flex;flex-direction:column;'
-                f'align-items:center;background:{color}15;border:1px solid {color}50;'
-                f'border-radius:6px;padding:6px 10px;margin-right:8px;">'
-                f'<div style="font-size:7px;font-weight:700;letter-spacing:2px;'
-                f'color:{pal["muted"]};text-transform:uppercase">{_e(label)}</div>'
-                f'<div style="font-size:14px;font-weight:800;color:{color}">{_e(val)}</div>'
+        return (f'<div style="flex:1;min-width:58px;border:1px solid {color}55;'
+                f'border-radius:6px;padding:5px 8px;text-align:center;">'
+                f'<div style="font-size:7px;font-weight:700;letter-spacing:1.5px;'
+                f'color:{pal["muted"]};text-transform:uppercase">{label}</div>'
+                f'<div style="font-size:12px;font-weight:800;color:{color};margin-top:2px">'
+                f'{_e(val)}</div>'
                 f'</div>')
 
     stat_strip = (
         f'<div style="font-size:9px;font-weight:700;color:{pal["muted"]};letter-spacing:2px;'
         f'text-transform:uppercase;margin-bottom:6px">{_e(prim)}</div>'
-        f'<div style="font-size:34px;font-weight:800;color:{pal["text"]};'
-        f'font-family:Georgia,serif;line-height:1.0;margin-bottom:8px">{pval}</div>'
-        f'<div style="display:flex;flex-wrap:wrap;gap:4px">'
-        + _pill("MoM", ms, mc)
-        + _pill("YoY", ys, yc)
-        + (_pill("WoW", ws, wc) if ws != "—" else "")
+        f'<div style="font-size:32px;font-weight:800;color:{pal["text"]};'
+        f'font-family:Georgia,serif;line-height:1.0;margin-bottom:10px">{pval}</div>'
+        f'<div style="display:flex;gap:6px">'
+        + _kpi_pill_box("MoM", ms, mc)
+        + _kpi_pill_box("YoY", ys, yc)
+        + (_kpi_pill_box("WoW", ws, wc) if ws != "—" else "")
         + '</div>'
     )
 
-    # Secondary KPIs (small row under hero)
+    # Secondary KPIs (below headline, inside left section)
     sec_kpis = [k for k in role_kpis if k != prim and k in kpis][:4]
     sec_html = ""
     for sk in sec_kpis:
         sd  = kpis[sk]; sm, smc = _fmt_pct(sd.get("mom_pct"))
-        sec_html += (f'<div style="border-left:3px solid {accent};padding-left:8px;'
-                     f'margin-right:14px;">'
+        sec_html += (f'<div style="border-left:3px solid {accent};padding-left:8px;">'
                      f'<div style="font-size:7px;color:{pal["muted"]};letter-spacing:1px;'
                      f'text-transform:uppercase">{_e(sk)}</div>'
                      f'<div style="font-size:12px;font-weight:700;color:{pal["text"]};'
@@ -945,60 +943,130 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
                      f'<div style="font-size:8px;font-weight:600;color:{smc}">{_e(sm)} MoM</div>'
                      f'</div>')
 
-    # Dimension bar chart — up to 4 switchable dimensions
+    # ── Narrative content split into 3 independent blocks ─────────────────── #
+    summary = _strip_md(getattr(narrative,"exec_summary","") or "")
+    drivers = _strip_md(getattr(narrative,"drivers_md","") or "")
+    action  = _strip_md(getattr(narrative,"recommended_action","") or "")
+
+    tone_labels = {
+        "c_suite":    ("Strategic Overview","Boardroom Signals","Executive Directive"),
+        "leadership": ("Performance Review","Root-Cause Drivers","Leadership Priority"),
+        "management": ("Operational Status","What Moved the Number","Team Action"),
+    }
+    wh_lbl, dr_lbl, ac_lbl = tone_labels.get(tier, tone_labels["leadership"])
+
+    # Block 1 — Strategic Overview (left column)
+    pills = ""
+    for kn in [k for k in role_kpis if k in kpis][:4]:
+        kd = kpis[kn]; ms2, mc2 = _fmt_pct(kd.get("mom_pct")); ys2, yc2 = _fmt_pct(kd.get("yoy_pct"))
+        if ms2 != "—":
+            pills += (f'<span class="stat-pill" style="background:{mc2}22;'
+                      f'border-color:{mc2}66;color:{mc2}">'
+                      f'{_e(kn)}: {_e(ms2)} MoM</span>')
+        if ys2 != "—":
+            pills += (f'<span class="stat-pill" style="background:{yc2}22;'
+                      f'border-color:{yc2}66;color:{yc2}">'
+                      f'YoY {_e(ys2)}</span>')
+    strategic_html = (f'<div class="sec">{_e(wh_lbl)}</div>'
+                      f'<div class="ed-stat-row">{pills}</div>'
+                      f'<div class="narr">{_e(summary[:280])}</div>')
+
+    # Block 2 — Boardroom Signals (middle-top)
+    drv_lines = [l.strip().lstrip("•-*123456789. ") for l in drivers.split("\n") if l.strip()][:4]
+    drv_html  = "".join(
+        f'<div style="margin-bottom:5px;font-size:10px;color:{pal["subtext"]};">'
+        f'<span style="color:{accent};margin-right:4px">▶</span>{_e(l)}</div>'
+        for l in drv_lines
+    ) or f'<div class="narr">{_e(summary[:120])}</div>'
+    boardroom_html = f'<div class="sec">{_e(dr_lbl)}</div>{drv_html}'
+
+    # Block 3 — Executive Directive (full-width bottom band)
+    act_lines = [l.strip().lstrip("•-*123456789. ") for l in action.split("\n") if l.strip()][:3]
+    if not act_lines:
+        act_lines = [action[:150]] if action else ["Review performance with team."]
+    act_html = "".join(
+        f'<div style="display:inline-block;margin-right:18px;margin-bottom:4px;'
+        f'font-size:10px;color:{pal["subtext"]};">'
+        f'<span style="color:{accent};font-weight:700;margin-right:5px">▶</span>{_e(l)}</div>'
+        for l in act_lines
+    )
+    exec_dir_html = f'<div class="sec">{_e(ac_lbl)}</div><div style="display:flex;flex-wrap:wrap">{act_html}</div>'
+
+    # Dimension bar chart (right-top panel)
     dim_gs    = _dim_groups(all_drivers, 4, 8)
     first_dim = _best_first_dim(dim_gs)
     bar_html  = ""
     if first_dim:
         d = dim_gs[first_dim]
         n = len(d["labels"])
-        h = min(max(n * 28 + 20, 80), 220)
-        # Pill selector — one pill per detected dimension
-        _accent = accent
-        _pills = ""
+        h = min(max(n * 26 + 20, 80), 180)
+        _pills_dim = ""
         for _i, _dk in enumerate(dim_gs.keys()):
             _active = "ed-dim-pill-active" if _i == 0 else ""
-            _pills += (f'<button class="ed-dim-pill {_active}" '
-                       f'data-dim="{_e(_dk)}" '
-                       f'onclick="ariaEdDim(this)" '
-                       f'style="--ed-accent:{_accent}">'
-                       f'{_e(_dk)}</button> ')
+            _pills_dim += (f'<button class="ed-dim-pill {_active}" '
+                           f'data-dim="{_e(_dk)}" onclick="ariaEdDim(this)" '
+                           f'style="--ed-accent:{accent}">{_e(_dk)}</button> ')
         bar_html = (
             f'<div style="display:flex;align-items:center;justify-content:space-between;'
-            f'flex-wrap:wrap;gap:4px;margin-top:10px;margin-bottom:6px">'
+            f'flex-wrap:wrap;gap:4px;margin-bottom:6px">'
             f'<span id="ed-dim-title" class="sec" style="margin-bottom:0">'
             f'{_e(first_dim)} Breakdown</span>'
-            f'<div style="display:flex;flex-wrap:wrap;gap:3px">{_pills}</div>'
+            f'<div style="display:flex;flex-wrap:wrap;gap:3px">{_pills_dim}</div>'
             f'</div>'
-            f'<div class="chart-box" style="height:{h}px">'
-            f'<canvas id="ed_bar"></canvas></div>'
+            f'<div class="chart-box" style="height:{h}px"><canvas id="ed_bar"></canvas></div>'
         )
+
+    border = pal["border"]
 
     return f"""
 <div class="card">
   {_masthead(payload, role, pal, accent)}
-  <!-- Hero strip -->
-  <div class="ed-hero">
-    {icon_html}
-    <div style="flex:1">
-      <div class="ed-headline">{_e(headline)}</div>
-      <div class="ed-sub">{_e(sub_1st)}</div>
+
+  <!-- ── TOP: headline + secondary KPIs (left) | primary KPI tall box (right) ── -->
+  <div style="display:flex;gap:0;margin-bottom:14px;padding-bottom:14px;
+              border-bottom:1px solid {border}">
+    <!-- Left: icon + headline + subtitle + secondary KPIs -->
+    <div style="flex:1;padding-right:20px">
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">
+        {icon_html}
+        <div style="flex:1">
+          <div class="ed-headline">{_e(headline)}</div>
+          <div class="ed-sub">{_e(sub_1st)}</div>
+        </div>
+      </div>
+      {f'<div style="display:flex;flex-wrap:wrap;gap:12px;padding-left:4px">{sec_html}</div>' if sec_html else ''}
     </div>
-    <div style="flex:0 0 180px;padding-left:16px;border-left:1px solid {pal['border']}">
+    <!-- Right: primary KPI spanning full height of top section -->
+    <div style="flex:0 0 175px;padding-left:16px;border-left:1px solid {border};
+                display:flex;flex-direction:column;justify-content:center">
       {stat_strip}
     </div>
   </div>
-  <!-- Secondary KPI row -->
-  {f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid {pal["border"]}">{sec_html}</div>' if sec_html else ''}
-  <!-- Narrative columns + bar chart -->
-  <div style="display:flex;gap:0;margin-top:2px">
-    <div style="flex:1;padding-right:14px;border-right:1px solid {pal['border']}">
-      {_narrative_section(narrative, pal, accent, kpis, role_kpis, tier)}
+
+  <!-- ── BOTTOM: strategic overview (left) | signals+bar top, exec dir bottom (right) ── -->
+  <div style="display:flex;gap:0">
+    <!-- Left col: Strategic Overview, full height -->
+    <div style="flex:0 0 28%;padding-right:14px;border-right:1px solid {border}">
+      {strategic_html}
     </div>
-    <div style="flex:0 0 220px;padding-left:16px">
-      {bar_html}
+    <!-- Middle-right: column flex — signals+bar on top, exec directive below -->
+    <div style="flex:1;padding-left:14px;display:flex;flex-direction:column">
+      <!-- Top row: Boardroom Signals | BAR Chart -->
+      <div style="display:flex;gap:0;padding-bottom:14px;border-bottom:1px solid {border}">
+        <div style="flex:1;padding-right:14px;border-right:1px solid {border}">
+          {boardroom_html}
+        </div>
+        <div style="flex:0 0 200px;padding-left:14px">
+          {bar_html}
+        </div>
+      </div>
+      <!-- Bottom band: Executive Directive spanning full middle+right width -->
+      <div style="padding-top:12px">
+        {exec_dir_html}
+      </div>
     </div>
   </div>
+
   {_footer(narrative, accent, pal)}
 </div>"""
 
@@ -1578,7 +1646,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v22 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v23 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
