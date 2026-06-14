@@ -2656,6 +2656,45 @@ def compute_preview_metrics_v2(
     except Exception:
         dim_member_kpis_preview = {}
 
+    # ── Per-dimension-member KPI time series (scorecard sparkline filter) ──── #
+    # Structure: {dim: {member: {kpi_name: [series_values]}}}
+    dim_member_per_kpi_series_preview: dict = {}
+    try:
+        for _dim_s in list(dim_member_kpis_preview.keys()):
+            if _dim_s not in _df_pks.columns:
+                continue
+            dim_member_per_kpi_series_preview[_dim_s] = {}
+            _members_s = sorted(_df_pks[_dim_s].dropna().unique().tolist(), key=str)
+            for _member_s in _members_s:
+                _df_ms = _df_pks[_df_pks[_dim_s] == _member_s].copy()
+                _df_ms["_date"] = pd.to_datetime(_df_ms[date_col], errors="coerce").dt.date
+                _mseries: dict = {}
+                for _kc_s in kpis_cfg:
+                    _kn_s  = _kc_s.get("name","") or _kc_s.get("user_name","") or _kc_s.get("label","")
+                    _col_s = _kc_s.get("column","") or _kc_s.get("num_col","")
+                    _agg_s = _kc_s.get("agg","sum")
+                    _num_s = _kc_s.get("num_col",""); _den_s = _kc_s.get("den_col","")
+                    _sc_s  = float(_kc_s.get("scale", 1))
+                    if not _kn_s: continue
+                    try:
+                        if _agg_s == "sum" and _col_s in _df_ms.columns:
+                            _sv = _df_ms.groupby("_date")[_col_s].sum().sort_index()
+                            _mseries[_kn_s] = [round(float(v) * _sc_s, 4) for v in _sv.values]
+                        elif _agg_s in ("avg", "mean") and _col_s in _df_ms.columns:
+                            _sv = _df_ms.groupby("_date")[_col_s].mean().sort_index()
+                            _mseries[_kn_s] = [round(float(v) * _sc_s, 4) for v in _sv.values]
+                        elif (_agg_s in ("ratio","pct")
+                              and _num_s in _df_ms.columns and _den_s in _df_ms.columns):
+                            _dn_s = _df_ms.groupby("_date")[_num_s].sum()
+                            _dd_s = _df_ms.groupby("_date")[_den_s].sum()
+                            _r_s  = (_dn_s / _dd_s.where(_dd_s > 0)).fillna(0) * _sc_s
+                            _mseries[_kn_s] = [round(float(v), 4) for v in _r_s.sort_index().values]
+                    except Exception:
+                        pass
+                dim_member_per_kpi_series_preview[_dim_s][str(_member_s)] = _mseries
+    except Exception:
+        dim_member_per_kpi_series_preview = {}
+
     # ── Flatten drivers to a list for backward-compat with callers ────────── #
     # Callers (build_live_narrative, generate_svg_preview) expect either:
     #   - flat list [{dimension, member, delta, ...}]  (old format)
@@ -2672,9 +2711,10 @@ def compute_preview_metrics_v2(
     payload["drivers_dod"]        = drivers_dod_raw
     payload["trend_series"]        = trend_series
     payload["monthly_revenue_12m"] = monthly_revenue_12m
-    payload["per_kpi_series"]      = per_kpi_series_preview
-    payload["per_kpi_dates"]       = per_kpi_dates_preview
-    payload["dim_member_kpis"]     = dim_member_kpis_preview
+    payload["per_kpi_series"]            = per_kpi_series_preview
+    payload["per_kpi_dates"]             = per_kpi_dates_preview
+    payload["dim_member_kpis"]           = dim_member_kpis_preview
+    payload["dim_member_per_kpi_series"] = dim_member_per_kpi_series_preview
     payload["timeframe_key"]       = timeframe_key
 
     # ── Target / Achievement KPIs (optional) ──────────────────────────────── #
@@ -3063,11 +3103,12 @@ def build_live_narrative(metrics: dict, role_cfg: dict) -> tuple[dict, object]:
         "kpis":            metrics.get("kpis", {}),
         "anomalies":           metrics.get("anomalies", []),
         "drivers":             drivers_dict,
-        "daily_sales_30d":     metrics.get("trend_series", []),
-        "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
-        "per_kpi_series":      metrics.get("per_kpi_series", {}),
-        "per_kpi_dates":       metrics.get("per_kpi_dates", []),
-        "dim_member_kpis":     metrics.get("dim_member_kpis", {}),
+        "daily_sales_30d":           metrics.get("trend_series", []),
+        "monthly_revenue_12m":       metrics.get("monthly_revenue_12m", {}),
+        "per_kpi_series":            metrics.get("per_kpi_series", {}),
+        "per_kpi_dates":             metrics.get("per_kpi_dates", []),
+        "dim_member_kpis":           metrics.get("dim_member_kpis", {}),
+        "dim_member_per_kpi_series": metrics.get("dim_member_per_kpi_series", {}),
     }
     cfg = {
         "llm": {
@@ -3146,14 +3187,15 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
         "reference_date":  metrics.get("reference_date", str(date.today())),
         "window_start":    metrics.get("window_start", ""),
         "timeframe":       metrics.get("timeframe", metrics.get("timeframe_key", "1d")),
-        "kpis":                role_kpis_filtered,
-        "drivers":             drivers_dict,
-        "drivers_dod":         metrics.get("drivers_dod", {}),
-        "daily_sales_30d":     metrics.get("trend_series", []),
-        "monthly_revenue_12m": metrics.get("monthly_revenue_12m", {}),
-        "per_kpi_series":      metrics.get("per_kpi_series", {}),
-        "per_kpi_dates":       metrics.get("per_kpi_dates", []),
-        "dim_member_kpis":     metrics.get("dim_member_kpis", {}),
+        "kpis":                      role_kpis_filtered,
+        "drivers":                   drivers_dict,
+        "drivers_dod":               metrics.get("drivers_dod", {}),
+        "daily_sales_30d":           metrics.get("trend_series", []),
+        "monthly_revenue_12m":       metrics.get("monthly_revenue_12m", {}),
+        "per_kpi_series":            metrics.get("per_kpi_series", {}),
+        "per_kpi_dates":             metrics.get("per_kpi_dates", []),
+        "dim_member_kpis":           metrics.get("dim_member_kpis", {}),
+        "dim_member_per_kpi_series": metrics.get("dim_member_per_kpi_series", {}),
     }
 
     mod_role = dict(role_cfg)
