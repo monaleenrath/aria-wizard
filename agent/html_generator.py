@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v24"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v25"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -505,7 +505,7 @@ def _chart_sparkline(cid: str, values: list, accent: str, labels: list = None) -
     vj = json.dumps([round(v, 2) for v in values])
     lj = json.dumps(labels if labels else [str(i) for i in range(len(values))])
     return f"""
-    new Chart(document.getElementById('{cid}'), {{
+    ARIA_CHARTS['{cid}'] = new Chart(document.getElementById('{cid}'), {{
         type:'line',
         data:{{ labels:{lj}, datasets:[{{ data:{vj},
             borderColor:'{accent}', borderWidth:1.5, pointRadius:0, pointHoverRadius:3,
@@ -1418,14 +1418,20 @@ function ariaEdDim(pill) {{
     }});
 }}"""
     elif tmpl_key == "scorecard":
-        # Scorecard: filter updates KPI tile values + MoM/YoY; no bar chart; no chips
+        # Scorecard: filter updates KPI tile values + MoM/YoY + sparklines
         sc_role_kpis = role.get("kpis", list(kpis.keys()))
         sc_show_kpis = ([k for k in sc_role_kpis if k in kpis] or list(kpis.keys()))[:9]
-        kpi_order_js  = json.dumps(sc_show_kpis)
-        dim_member_js = json.dumps(payload.get("dim_member_kpis", {}))
+        kpi_order_js       = json.dumps(sc_show_kpis)
+        dim_member_js      = json.dumps(payload.get("dim_member_kpis", {}))
+        member_series_js   = json.dumps(payload.get("dim_member_per_kpi_series", {}))
+        # Original (unfiltered) per-KPI series — for restoring on "All"
+        _sc_per_kpi = payload.get("per_kpi_series", {})
+        orig_series_js     = json.dumps({kn: _sc_per_kpi.get(kn, []) for kn in sc_show_kpis})
         filter_js = f"""
-var ARIA_KPI_ORDER       = {kpi_order_js};
-var ARIA_DIM_MEMBER_KPIS = {dim_member_js};
+var ARIA_KPI_ORDER        = {kpi_order_js};
+var ARIA_DIM_MEMBER_KPIS  = {dim_member_js};
+var ARIA_SC_MEMBER_SERIES = {member_series_js};
+var ARIA_SC_ORIG_SERIES   = {orig_series_js};
 
 /* format a raw pct number → {{text, color}} */
 function _ariaPct(p) {{
@@ -1440,6 +1446,8 @@ function ariaFilter(sel) {{
     var val = sel.value;
     var mData = (val === 'All') ? null :
                 ((ARIA_DIM_MEMBER_KPIS[dim] || {{}})[val] || null);
+    var mSeries = (val === 'All') ? null :
+                  ((ARIA_SC_MEMBER_SERIES[dim] || {{}})[val] || null);
 
     ARIA_KPI_ORDER.forEach(function(kn, i) {{
         var kd = mData ? (mData[kn] || null) : null;
@@ -1453,9 +1461,9 @@ function ariaFilter(sel) {{
         var me = document.getElementById('sc_md_' + i);
         if (me) {{
             if (kd && kd.mom_pct !== undefined && kd.mom_pct !== null) {{
-                var r = _ariaPct(kd.mom_pct);
-                me.textContent = r.text + ' MoM';
-                me.style.color = r.color;
+                var rm = _ariaPct(kd.mom_pct);
+                me.textContent = rm.text + ' MoM';
+                me.style.color = rm.color;
             }} else {{
                 me.textContent = me.getAttribute('data-orig') || '— MoM';
                 me.style.color = me.getAttribute('data-oc') || '#888';
@@ -1466,12 +1474,25 @@ function ariaFilter(sel) {{
         var ye = document.getElementById('sc_yd_' + i);
         if (ye) {{
             if (kd && kd.yoy_pct !== undefined && kd.yoy_pct !== null) {{
-                var r = _ariaPct(kd.yoy_pct);
-                ye.textContent = r.text + ' YoY';
-                ye.style.color = r.color;
+                var ry = _ariaPct(kd.yoy_pct);
+                ye.textContent = ry.text + ' YoY';
+                ye.style.color = ry.color;
             }} else {{
                 ye.textContent = ye.getAttribute('data-orig') || '— YoY';
                 ye.style.color = ye.getAttribute('data-oc') || '#888';
+            }}
+        }}
+
+        /* ── sparkline ── */
+        var chart = ARIA_CHARTS['sc_spark_' + i];
+        if (chart) {{
+            var newSeries = (mSeries && mSeries[kn] && mSeries[kn].length > 1)
+                            ? mSeries[kn]
+                            : (ARIA_SC_ORIG_SERIES[kn] || null);
+            if (newSeries && newSeries.length > 1) {{
+                chart.data.datasets[0].data = newSeries;
+                chart.data.labels = newSeries.map(function(_, j) {{ return j; }});
+                chart.update('none');
             }}
         }}
     }});
@@ -1672,7 +1693,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v24 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v25 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
