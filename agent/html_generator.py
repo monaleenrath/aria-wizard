@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v25"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v27"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -547,7 +547,17 @@ def _chart_donut(cid: str, labels: list, values: list, accent: str) -> str:
             hoverOffset:4 }}] }},
         options:{{ cutout:'62%', responsive:true, maintainAspectRatio:false,
             plugins:{{ legend:{{display:false}},
-                datalabels:{{display:false}},
+                datalabels:{{
+                    display:true,
+                    formatter:function(v, ctx){{
+                        var total = ctx.dataset.data.reduce(function(a,b){{return a+b;}},0);
+                        return total>0 ? (v/total*100).toFixed(1)+'%' : '';
+                    }},
+                    color:'#fff',
+                    font:{{size:8, weight:'700'}},
+                    textStrokeColor:'rgba(0,0,0,0.35)',
+                    textStrokeWidth:2,
+                }},
                 tooltip:{{ callbacks:{{ label: ctx => ' '+ctx.label+': '+
                     (ctx.raw>=1e6?'$'+(ctx.raw/1e6).toFixed(1)+'M':
                      ctx.raw>=1e3?'$'+(ctx.raw/1e3).toFixed(1)+'K':
@@ -691,8 +701,29 @@ def _chart_waterfall(cid: str, labels: list, floats: list,
                 borderRadius:3, borderWidth:0
             }}] }},
             options:{{ responsive:true, maintainAspectRatio:false,
+                layout:{{padding:{{top:18}}}},
                 plugins:{{ legend:{{display:false}},
-                    datalabels:{{display:false}},
+                    datalabels:{{
+                        display:true,
+                        anchor:'end', align:'top',
+                        formatter:function(v){{
+                            if(!Array.isArray(v)) return '';
+                            var diff = v[1] - v[0];
+                            /* Prior/Current anchors: show absolute value */
+                            if(v[0]===0) {{
+                                return Math.abs(v[1])>=1e6?'$'+(v[1]/1e6).toFixed(1)+'M':
+                                       Math.abs(v[1])>=1e3?'$'+(v[1]/1e3).toFixed(1)+'K':
+                                       '$'+v[1].toFixed(0);
+                            }}
+                            /* Delta bars: show signed change */
+                            var s = diff>=0?'+':'-';
+                            var a = Math.abs(diff);
+                            return s+(a>=1e6?(a/1e6).toFixed(1)+'M':
+                                      a>=1e3?(a/1e3).toFixed(1)+'K':
+                                      a.toFixed(0));
+                        }},
+                        color:'{tc}', font:{{size:8, weight:'600'}},
+                    }},
                     tooltip:{{ callbacks:{{
                         label: ctx => {{
                             var a=ctx.raw, v=Array.isArray(a)?a[1]-a[0]:a;
@@ -1120,7 +1151,13 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
     fp_html = ""
     if filter_dims_src:
         sels = ""
-        for dim in list(filter_dims_src.keys()):
+        # Sort dims: highest cardinality first (5-7 sweet spot leads), lowest last
+        def _dim_card(d):
+            if d in dim_gs: return len(dim_gs[d].get("labels", []))
+            if d in filter_dims_src: return len(filter_dims_src[d]) if isinstance(filter_dims_src[d], dict) else 0
+            return 0
+        _sorted_filter_dims = sorted(filter_dims_src.keys(), key=_dim_card, reverse=True)
+        for dim in _sorted_filter_dims:
             if dim in dim_gs:
                 members = dim_gs[dim]["labels"]
             else:
@@ -1199,7 +1236,13 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
     fp_html = ""
     if filter_dims_src:
         sels = ""
-        for dim in list(filter_dims_src.keys()):
+        # Sort dims: highest cardinality first (5-7 sweet spot leads), lowest last
+        def _ds_dim_card(d):
+            if d in dim_gs: return len(dim_gs[d].get("labels", []))
+            if d in filter_dims_src: return len(filter_dims_src[d]) if isinstance(filter_dims_src[d], dict) else 0
+            return 0
+        _sorted_ds_dims = sorted(filter_dims_src.keys(), key=_ds_dim_card, reverse=True)
+        for dim in _sorted_ds_dims:
             if dim in dim_gs:
                 members = dim_gs[dim]["labels"]
             else:
@@ -1218,7 +1261,7 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
         val  = _e(kd.get("value_fmt","—"))
         ms, mc = _fmt_pct(kd.get("mom_pct"))
         ys, yc = _fmt_pct(kd.get("yoy_pct"))
-        rag  = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
+        rag    = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
         mini_tiles += f"""
 <div class="mkpi" style="border-top:2px solid {rag}">
   <div class="mkpi-name">{_e(kn)}</div>
@@ -1250,10 +1293,15 @@ def _tmpl_dossier(narrative, payload: dict, role: dict, pal: dict) -> str:
     else:
         dim_bar_html = f'<div style="height:{ch_h}px;display:flex;align-items:center;justify-content:center;color:{pal["muted"]};font-size:10px">No dimension data</div>'
 
-    # Bottom-left: donut
-    d_labels, d_values = _donut_data_from_drivers(all_drivers)
-    if not d_values:
-        d_labels, d_values = _donut_from_kpis(kpis, show_kpis)
+    # Bottom-left: donut — use first_dim's members so chart shows ONE consistent
+    # dimension (avoids mixing e.g. Store Type + Category + Province in same pie)
+    if first_dim and first_dim in dim_gs:
+        d_labels = dim_gs[first_dim]["labels"]
+        d_values = dim_gs[first_dim]["values"]
+    else:
+        d_labels, d_values = _donut_data_from_drivers(all_drivers)
+        if not d_values:
+            d_labels, d_values = _donut_from_kpis(kpis, show_kpis)
     donut_html = ""
     if d_values:
         legend = "".join(
@@ -1384,13 +1432,17 @@ def generate_html_card(narrative, payload: dict, _config: dict,
         if first_dim:
             d = dim_gs[first_dim]
             chart_js += _chart_bar_v("ds_dimbar", d["labels"], d["values"], accent, pal)
-        # Donut
-        d_labels, d_values = _donut_data_from_drivers(all_drivers)
-        if not d_values:
-            d_labels, d_values = _donut_from_kpis(kpis,
-                ([k for k in role.get("kpis",[]) if k in kpis] or list(kpis.keys()))[:5])
-        if d_values:
-            chart_js += _chart_donut("ds_donut", d_labels, d_values, accent)
+        # Donut — same first_dim as bar chart (consistent dimension across all charts)
+        if first_dim and first_dim in dim_gs:
+            _dn_l = dim_gs[first_dim]["labels"]
+            _dn_v = dim_gs[first_dim]["values"]
+        else:
+            _dn_l, _dn_v = _donut_data_from_drivers(all_drivers)
+            if not _dn_v:
+                _dn_l, _dn_v = _donut_from_kpis(kpis,
+                    ([k for k in role.get("kpis",[]) if k in kpis] or list(kpis.keys()))[:5])
+        if _dn_v:
+            chart_js += _chart_donut("ds_donut", _dn_l, _dn_v, accent)
         # Waterfall
         wf_l, wf_f, wf_c, _ = _waterfall_data(kpis, prim_real, all_drivers)
         if wf_f:
@@ -1501,9 +1553,10 @@ function ariaFilter(sel) {{
     elif tmpl_key == "dossier":
         ds_role_kpis = role.get("kpis", list(kpis.keys()))
         ds_show_kpis = ([k for k in ds_role_kpis if k in kpis] or list(kpis.keys()))[:5]
-        ds_kpi_order_js  = json.dumps(ds_show_kpis)
-        ds_dim_member_js = json.dumps(payload.get("dim_member_kpis", {}))
-        palette_js       = json.dumps(_PALETTE8)
+        ds_kpi_order_js    = json.dumps(ds_show_kpis)
+        ds_dim_member_js   = json.dumps(payload.get("dim_member_kpis", {}))
+        _ds_dim_monthly    = json.dumps(payload.get("dim_member_monthly", {}))
+        palette_js         = json.dumps(_PALETTE8)
         # Monthly trend data for line chart restore
         _ds_monthly      = payload.get("monthly_revenue_12m", {})
         _ds_m_vals       = _ds_monthly.get("values", [])
@@ -1529,10 +1582,11 @@ function ariaFilter(sel) {{
         _tc  = pal["muted"]
         _sub = pal["subtext"]
         filter_js = f"""
-var ARIA_DS_KPIS         = {ds_kpi_order_js};
-var ARIA_DIM_MEMBER_KPIS = {ds_dim_member_js};
-var ARIA_ACCENT          = '{accent}';
-var ARIA_PALETTE         = {palette_js};
+var ARIA_DS_KPIS           = {ds_kpi_order_js};
+var ARIA_DIM_MEMBER_KPIS   = {ds_dim_member_js};
+var ARIA_DIM_MONTHLY       = {_ds_dim_monthly};
+var ARIA_ACCENT            = '{accent}';
+var ARIA_PALETTE           = {palette_js};
 var ARIA_DIM_DATA        = {dim_data_json};
 var ARIA_DIM_DRIVERS     = {dim_drivers_js};
 var _ARIA_MONTHLY_LABELS = {monthly_labels_js};
@@ -1651,7 +1705,24 @@ function ariaFilter(sel) {{
         if (wt) wt.textContent = dim+' Waterfall'+(val!=='All'?' • '+val:'');
     }}
 
-    /* ── 5. Line chart stays as the 12M monthly revenue trend — no change on filter ── */
+    /* ── 5. Line trend — switch to member's monthly series, restore on All ── */
+    var trendChart = ARIA_CHARTS['ds_trend'];
+    if (trendChart) {{
+        var mMonthly = (val === 'All') ? null :
+                       ((ARIA_DIM_MONTHLY[dim] || {{}})[val] || null);
+        if (mMonthly && mMonthly.values && mMonthly.values.length >= 2) {{
+            trendChart.data.labels   = mMonthly.labels;
+            trendChart.data.datasets[0].data = mMonthly.values;
+        }} else {{
+            trendChart.data.labels   = _ARIA_MONTHLY_LABELS;
+            trendChart.data.datasets[0].data = _ARIA_MONTHLY_VALUES;
+        }}
+        trendChart.update('none');
+        var tt = document.getElementById('ds-trend-title');
+        if (tt) tt.textContent = (val === 'All')
+            ? (_ARIA_MONTHLY_LABELS.length ? 'Revenue — Monthly (12M)' : 'Trend')
+            : dim + ' → ' + val + ' Monthly Trend';
+    }}
 }}
 """
 
@@ -1693,7 +1764,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v25 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v27 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
