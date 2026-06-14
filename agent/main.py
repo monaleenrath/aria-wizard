@@ -350,6 +350,35 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         log.exception("dim_member_per_kpi_series failed — sparklines will not update on filter")
         dim_member_per_kpi_series = {}
 
+    # Per-dimension-member monthly revenue series (dossier 12M trend chart filter)
+    # Structure: {dim: {member: {values: [...], labels: [...]}}}
+    dim_member_monthly: dict = {}
+    if _spark_col:
+        try:
+            _df_mm = df.copy()
+            _df_mm[date_col] = _pd.to_datetime(_df_mm[date_col], errors="coerce")
+            _df_mm = _df_mm.dropna(subset=[date_col])
+            _df_mm["_month"] = _df_mm[date_col].dt.to_period("M")
+            for _dim_mm in list(dim_member_kpis.keys()):
+                if _dim_mm not in _df_mm.columns:
+                    continue
+                dim_member_monthly[_dim_mm] = {}
+                for _mem_mm in sorted(_df_mm[_dim_mm].dropna().unique().tolist(), key=str):
+                    _df_m_mm = _df_mm[_df_mm[_dim_mm] == _mem_mm]
+                    _monthly_mm = (
+                        _df_m_mm.groupby("_month")[_spark_col]
+                        .sum()
+                        .sort_index()
+                        .tail(12)
+                    )
+                    dim_member_monthly[_dim_mm][str(_mem_mm)] = {
+                        "labels": [str(p) for p in _monthly_mm.index],
+                        "values": [round(float(v), 2) for v in _monthly_mm.values],
+                    }
+        except Exception:
+            log.exception("dim_member_monthly failed — trend chart will not update on filter")
+            dim_member_monthly = {}
+
     payload = {
         **snapshot.to_dict(),
         "drivers": drivers_to_dict(drivers_yoy),
@@ -360,6 +389,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         "per_kpi_dates":             per_kpi_dates,
         "dim_member_kpis":           dim_member_kpis,
         "dim_member_per_kpi_series": dim_member_per_kpi_series,
+        "dim_member_monthly":        dim_member_monthly,
         "_aria_debug": {
             "da_ver": DRIVER_ANALYSIS_VERSION,
             "cfg_dims": _cfg_dims,   # actual dims used (after auto-detect fallback)
