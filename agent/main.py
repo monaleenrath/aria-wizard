@@ -304,15 +304,62 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
         dim_member_kpis = {}
         _cfg_dims = []   # ensure variable exists for debug dict below
 
+    # Per-dimension-member KPI time series (scorecard sparkline filter)
+    # Structure: {dim: {member: {kpi_name: [series_values]}}}
+    dim_member_per_kpi_series: dict = {}
+    try:
+        _cfg_kpis_s = config.get("metrics", {}).get("kpis", [])
+        for _dim_s in list(dim_member_kpis.keys()):
+            if _dim_s not in _df_curr.columns:
+                continue
+            dim_member_per_kpi_series[_dim_s] = {}
+            _members_s = sorted(_df_curr[_dim_s].dropna().unique().tolist(), key=str)
+            for _member_s in _members_s:
+                _df_ms = _df_curr[_df_curr[_dim_s] == _member_s].copy()
+                _df_ms["_date"] = _pd.to_datetime(
+                    _df_ms[date_col], errors="coerce"
+                ).dt.date
+                _mseries: dict = {}
+                for _kc_s in _cfg_kpis_s:
+                    _kname_s = _kc_s.get("name", "")
+                    _col_s   = _kc_s.get("column", "")
+                    _agg_s   = _kc_s.get("agg", "sum")
+                    _num_s   = _kc_s.get("num_col", "")
+                    _den_s   = _kc_s.get("den_col", "")
+                    _sc_s    = float(_kc_s.get("scale", 1))
+                    if not _kname_s:
+                        continue
+                    try:
+                        if _agg_s == "sum" and _col_s in _df_ms.columns:
+                            _sv = _df_ms.groupby("_date")[_col_s].sum().sort_index()
+                            _mseries[_kname_s] = [round(float(v) * _sc_s, 4) for v in _sv.values]
+                        elif _agg_s in ("avg", "mean") and _col_s in _df_ms.columns:
+                            _sv = _df_ms.groupby("_date")[_col_s].mean().sort_index()
+                            _mseries[_kname_s] = [round(float(v) * _sc_s, 4) for v in _sv.values]
+                        elif (_agg_s in ("ratio", "pct")
+                              and _num_s in _df_ms.columns
+                              and _den_s in _df_ms.columns):
+                            _dn_s = _df_ms.groupby("_date")[_num_s].sum()
+                            _dd_s = _df_ms.groupby("_date")[_den_s].sum()
+                            _r_s  = (_dn_s / _dd_s.where(_dd_s > 0)).fillna(0) * _sc_s
+                            _mseries[_kname_s] = [round(float(v), 4) for v in _r_s.sort_index().values]
+                    except Exception:
+                        pass
+                dim_member_per_kpi_series[_dim_s][str(_member_s)] = _mseries
+    except Exception:
+        log.exception("dim_member_per_kpi_series failed — sparklines will not update on filter")
+        dim_member_per_kpi_series = {}
+
     payload = {
         **snapshot.to_dict(),
         "drivers": drivers_to_dict(drivers_yoy),
         "drivers_dod": drivers_to_dict(drivers_dod),
         "daily_sales_30d":     daily_sales_30d,
         "monthly_revenue_12m": monthly_revenue_12m,
-        "per_kpi_series":      per_kpi_series,
-        "per_kpi_dates":       per_kpi_dates,
-        "dim_member_kpis":     dim_member_kpis,
+        "per_kpi_series":            per_kpi_series,
+        "per_kpi_dates":             per_kpi_dates,
+        "dim_member_kpis":           dim_member_kpis,
+        "dim_member_per_kpi_series": dim_member_per_kpi_series,
         "_aria_debug": {
             "da_ver": DRIVER_ANALYSIS_VERSION,
             "cfg_dims": _cfg_dims,   # actual dims used (after auto-detect fallback)
