@@ -1414,7 +1414,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-13-v18 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-13-v19 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
