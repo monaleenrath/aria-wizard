@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v23"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v24"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -37,7 +37,8 @@ from collections import defaultdict
 log = logging.getLogger(__name__)
 
 # ─── CDN ─────────────────────────────────────────────────────────────────── #
-_CHARTJS = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+_CHARTJS       = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+_DATALABELS_JS = "https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"
 
 # ─── Palettes ─────────────────────────────────────────────────────────────── #
 PALETTES = {
@@ -511,6 +512,7 @@ def _chart_sparkline(cid: str, values: list, accent: str, labels: list = None) -
             fill:true, backgroundColor:'{accent}18', tension:0.4 }}] }},
         options:{{ responsive:true, maintainAspectRatio:false,
             plugins:{{ legend:{{display:false}},
+                datalabels:{{display:false}},
                 tooltip:{{
                     enabled:true, mode:'index', intersect:false,
                     backgroundColor:'rgba(10,10,20,0.88)',
@@ -545,6 +547,7 @@ def _chart_donut(cid: str, labels: list, values: list, accent: str) -> str:
             hoverOffset:4 }}] }},
         options:{{ cutout:'62%', responsive:true, maintainAspectRatio:false,
             plugins:{{ legend:{{display:false}},
+                datalabels:{{display:false}},
                 tooltip:{{ callbacks:{{ label: ctx => ' '+ctx.label+': '+
                     (ctx.raw>=1e6?'$'+(ctx.raw/1e6).toFixed(1)+'M':
                      ctx.raw>=1e3?'$'+(ctx.raw/1e3).toFixed(1)+'K':
@@ -564,7 +567,17 @@ def _chart_bar_h(cid: str, labels: list, values: list, accent: str, pal: dict) -
         data:{{ labels:{lj}, datasets:[{{ data:{vj},
             backgroundColor:{cj}, borderRadius:3, borderWidth:0 }}] }},
         options:{{ indexAxis:'y', responsive:true, maintainAspectRatio:false,
+            layout:{{padding:{{right:42}}}},
             plugins:{{ legend:{{display:false}},
+                datalabels:{{
+                    anchor:'end', align:'right',
+                    formatter:function(v){{
+                        return Math.abs(v)>=1e6?(v/1e6).toFixed(1)+'M':
+                               Math.abs(v)>=1e3?(v/1e3).toFixed(1)+'K':
+                               v.toFixed(0);
+                    }},
+                    color:'{tc}', font:{{size:8,weight:'600'}}
+                }},
                 tooltip:{{ callbacks:{{ label: ctx =>
                     (Math.abs(ctx.raw)>=1e6
                      ? (ctx.raw>=0?'+':'')+( ctx.raw/1e6).toFixed(1)+'M'
@@ -594,7 +607,17 @@ def _chart_bar_v(cid: str, labels: list, values: list, accent: str, pal: dict) -
             data:{{ labels:{lj}, datasets:[{{ data:{vj},
                 backgroundColor:{cj}, borderRadius:4, borderWidth:0 }}] }},
             options:{{ responsive:true, maintainAspectRatio:false,
+                layout:{{padding:{{top:18}}}},
                 plugins:{{ legend:{{display:false}},
+                    datalabels:{{
+                        anchor:'end', align:'top',
+                        formatter:function(v){{
+                            return v>=1e6?'$'+(v/1e6).toFixed(1)+'M':
+                                   v>=1e3?'$'+(v/1e3).toFixed(1)+'K':
+                                   v.toFixed(0);
+                        }},
+                        color:'{tc}', font:{{size:8,weight:'600'}}
+                    }},
                     tooltip:{{ callbacks:{{ label: ctx =>
                         (ctx.raw>=1e6?'$'+(ctx.raw/1e6).toFixed(1)+'M':
                          ctx.raw>=1e3?'$'+(ctx.raw/1e3).toFixed(1)+'K':
@@ -602,8 +625,7 @@ def _chart_bar_v(cid: str, labels: list, values: list, accent: str, pal: dict) -
                 scales:{{
                     x:{{ ticks:{{ color:'{tc}', font:{{size:9}}, maxRotation:30 }},
                          grid:{{display:false}}, border:{{display:false}} }},
-                    y:{{ ticks:{{ color:'{tc}', font:{{size:8}} }},
-                         grid:{{display:false}}, border:{{display:false}} }}
+                    y:{{ display:false, grid:{{display:false}}, border:{{display:false}} }}
                 }},
                 animation:{{duration:300}} }}
         }});
@@ -631,6 +653,7 @@ def _chart_line_trend(cid: str, values: list, accent: str, pal: dict,
             }}] }},
             options:{{ responsive:true, maintainAspectRatio:false,
                 plugins:{{ legend:{{display:false}},
+                    datalabels:{{display:false}},
                     tooltip:{{ mode:'index', intersect:false,
                         callbacks:{{ label: function(ctx) {{
                             var v = ctx.raw;
@@ -669,6 +692,7 @@ def _chart_waterfall(cid: str, labels: list, floats: list,
             }}] }},
             options:{{ responsive:true, maintainAspectRatio:false,
                 plugins:{{ legend:{{display:false}},
+                    datalabels:{{display:false}},
                     tooltip:{{ callbacks:{{
                         label: ctx => {{
                             var a=ctx.raw, v=Array.isArray(a)?a[1]-a[0]:a;
@@ -1001,8 +1025,10 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
         n = len(d["labels"])
         h = min(max(n * 26 + 20, 80), 180)
         _pills_dim = ""
-        for _i, _dk in enumerate(dim_gs.keys()):
-            _active = "ed-dim-pill-active" if _i == 0 else ""
+        # first_dim leads the list; remaining dims follow in original order
+        _dim_keys = [first_dim] + [k for k in dim_gs.keys() if k != first_dim]
+        for _dk in _dim_keys:
+            _active = "ed-dim-pill-active" if _dk == first_dim else ""
             _pills_dim += (f'<button class="ed-dim-pill {_active}" '
                            f'data-dim="{_e(_dk)}" onclick="ariaEdDim(this)" '
                            f'style="--ed-accent:{accent}">{_e(_dk)}</button> ')
@@ -1646,7 +1672,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v23 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v24 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -1657,7 +1683,10 @@ function ariaFilter(sel) {{
 <body>
 {body}
 <script src="{_CHARTJS}"></script>
+<script src="{_DATALABELS_JS}"></script>
 <script>
+/* ── Register chartjs-plugin-datalabels globally (bar value labels in PNG) ── */
+if (typeof ChartDataLabels !== 'undefined') {{ Chart.register(ChartDataLabels); }}
 /* ── Global state — must be in window scope so inline onclick/onchange can find functions ── */
 var ARIA_CHARTS = {{}};
 {filter_js}
