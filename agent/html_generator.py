@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v21"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v22"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -277,16 +277,45 @@ def _waterfall_data(kpis: dict, prim: str, all_drivers: list):
     """
     Build floating-bar waterfall: [Prior Period → lifts/drags → Current].
     Returns (labels, floats [[start,end]], colors, is_reference).
-    """
-    pk      = kpis.get(prim, {})
-    current = pk.get("value", 0) or 0
-    mom_pct = pk.get("mom_pct") or 0
-    prior   = current / (1 + mom_pct) if (1 + mom_pct) != 0 else current
 
-    lifts = sorted([d for d in all_drivers if d.get("delta",0)>0],
-                   key=lambda x: x["delta"], reverse=True)[:2]
-    drags = sorted([d for d in all_drivers if d.get("delta",0)<0],
-                   key=lambda x: x["delta"])[:2]
+    Prior/Current are derived from the best dimension's member absolute values
+    (sum of values = Current; sum of values - deltas = Prior).  This avoids
+    a scale mismatch when prim is a ratio KPI (e.g. Profit Margin % = 0.68)
+    whose value would be incommensurable with dollar-scale driver deltas.
+    """
+    # Group drivers by dimension; pick the dim with the largest total |delta|
+    by_dim: dict = {}
+    for d in all_drivers:
+        dn = d.get("dimension", "")
+        if dn:
+            by_dim.setdefault(dn, []).append(d)
+
+    best_dim_drvs: list = []
+    if by_dim:
+        best_dim = max(by_dim, key=lambda k: sum(abs(d.get("delta", 0) or 0) for d in by_dim[k]))
+        best_dim_drvs = by_dim[best_dim]
+
+    if best_dim_drvs:
+        # Use absolute member values for Prior/Current anchors
+        current = sum(d.get("value", 0) or d.get("current", 0) or 0 for d in best_dim_drvs)
+        prior   = sum(
+            (d.get("value", 0) or d.get("current", 0) or 0) - (d.get("delta", 0) or 0)
+            for d in best_dim_drvs
+        )
+        lifts = sorted([d for d in best_dim_drvs if d.get("delta", 0) > 0],
+                       key=lambda x: x["delta"], reverse=True)[:2]
+        drags = sorted([d for d in best_dim_drvs if d.get("delta", 0) < 0],
+                       key=lambda x: x["delta"])[:2]
+    else:
+        # Fallback: use KPI-based anchors (only for datasets without drivers)
+        pk      = kpis.get(prim, {})
+        current = pk.get("value", 0) or 0
+        mom_pct = pk.get("mom_pct") or 0
+        prior   = current / (1 + mom_pct) if (1 + mom_pct) != 0 else current
+        lifts = sorted([d for d in all_drivers if d.get("delta", 0) > 0],
+                       key=lambda x: x["delta"], reverse=True)[:2]
+        drags = sorted([d for d in all_drivers if d.get("delta", 0) < 0],
+                       key=lambda x: x["delta"])[:2]
 
     labels   = []
     floats   = []
@@ -509,7 +538,7 @@ def _chart_donut(cid: str, labels: list, values: list, accent: str) -> str:
     colors = _palette(accent, len(values))
     lj = json.dumps(labels); vj = json.dumps(values); cj = json.dumps(colors)
     return f"""
-    new Chart(document.getElementById('{cid}'), {{
+    ARIA_CHARTS['{cid}'] = new Chart(document.getElementById('{cid}'), {{
         type:'doughnut',
         data:{{ labels:{lj}, datasets:[{{ data:{vj},
             backgroundColor:{cj}, borderWidth:2, borderColor:'transparent',
@@ -631,7 +660,7 @@ def _chart_waterfall(cid: str, labels: list, floats: list,
     (function(){{
         var ctx = document.getElementById('{cid}');
         if(!ctx) return;
-        new Chart(ctx, {{
+        ARIA_CHARTS['{cid}'] = new Chart(ctx, {{
             type:'bar',
             data:{{ labels:{lj}, datasets:[{{
                 data:{fj},
@@ -1479,10 +1508,16 @@ function ariaFilter(sel) {{
 
     /* ── 4. Waterfall — rebuild from single-dim driver deltas ── */
     var drvs = ARIA_DIM_DRIVERS[dim] || [];
+    /* Compute Prior/Current from absolute member values (avoids ratio KPI scale mismatch) */
+    var curr_total = 0, prior_total = 0;
+    drvs.forEach(function(s) {{
+        curr_total  += (s.value  || 0);
+        prior_total += ((s.value || 0) - (s.delta || 0));
+    }});
     var lifts = drvs.filter(function(x){{return x.delta>0;}}).sort(function(a,b){{return b.delta-a.delta;}}).slice(0,3);
     var drags = drvs.filter(function(x){{return x.delta<0;}}).sort(function(a,b){{return a.delta-b.delta;}}).slice(0,2);
     var steps = lifts.concat(drags);
-    var wfLabels=['Prior'], wfData=[[0,Math.round(_ARIA_PRIOR_VAL*100)/100]], wfColors=['#60A5FA'], cum=_ARIA_PRIOR_VAL;
+    var wfLabels=['Prior'], wfData=[[0,Math.round(prior_total*100)/100]], wfColors=['#60A5FA'], cum=prior_total;
     steps.forEach(function(s) {{
         var hi = (val!=='All' && s.member===val);
         wfLabels.push(s.member.substring(0,12));
@@ -1490,7 +1525,7 @@ function ariaFilter(sel) {{
         wfColors.push(s.delta>=0 ? (hi?'#10B981':'#34D399') : (hi?'#EF4444':'#F87171'));
         cum += s.delta;
     }});
-    wfLabels.push('Current'); wfData.push([0,Math.round(_ARIA_CURR_VAL*100)/100]); wfColors.push('#60A5FA');
+    wfLabels.push('Current'); wfData.push([0,Math.round(curr_total*100)/100]); wfColors.push('#60A5FA');
     var wfChart = ARIA_CHARTS['ds_wfall'];
     if (wfChart) {{
         wfChart.data.labels = wfLabels;
@@ -1501,44 +1536,7 @@ function ariaFilter(sel) {{
         if (wt) wt.textContent = dim+' Waterfall'+(val!=='All'?' • '+val:'');
     }}
 
-    /* ── 5. Line chart — monthly line (All) or dim ranking bar (member) ── */
-    var lineCtx = document.getElementById('ds_trend');
-    var lt = document.getElementById('ds-trend-title');
-    if (lineCtx) {{
-        if (ARIA_CHARTS['ds_trend']) {{ ARIA_CHARTS['ds_trend'].destroy(); delete ARIA_CHARTS['ds_trend']; }}
-        if (val === 'All' && _ARIA_MONTHLY_LABELS.length >= 3) {{
-            if (lt) lt.textContent = 'Revenue — Monthly (12M)';
-            ARIA_CHARTS['ds_trend'] = new Chart(lineCtx, {{
-                type:'line',
-                data:{{labels:_ARIA_MONTHLY_LABELS, datasets:[{{
-                    data:_ARIA_MONTHLY_VALUES, borderColor:ARIA_ACCENT, borderWidth:2,
-                    pointRadius:0, fill:true, backgroundColor:ARIA_ACCENT+'22', tension:0.35
-                }}]}},
-                options:{{responsive:true, maintainAspectRatio:false,
-                    plugins:{{legend:{{display:false}},
-                        tooltip:{{mode:'index',intersect:false,
-                            callbacks:{{label:function(ctx){{return _fmtVal(ctx.raw);}}}}}}}},
-                    scales:{{
-                        x:{{ticks:{{color:_ARIA_TC,font:{{size:8}},maxTicksLimit:6}},grid:{{display:false}},border:{{display:false}}}},
-                        y:{{ticks:{{color:_ARIA_TC,font:{{size:8}}}},grid:{{display:false}},border:{{display:false}}}}
-                    }}, animation:{{duration:300}}}}
-            }});
-        }} else if (d) {{
-            if (lt) lt.textContent = dim+' Ranking'+(val!=='All'?' • '+val:'');
-            var bgRank = d.labels.map(function(l){{ return l===val ? ARIA_ACCENT : ARIA_ACCENT+'44'; }});
-            ARIA_CHARTS['ds_trend'] = new Chart(lineCtx, {{
-                type:'bar',
-                data:{{labels:d.labels, datasets:[{{data:d.values, backgroundColor:bgRank, borderRadius:3, borderWidth:0}}]}},
-                options:{{indexAxis:'y', responsive:true, maintainAspectRatio:false,
-                    plugins:{{legend:{{display:false}},
-                        tooltip:{{callbacks:{{label:function(ctx){{return _fmtVal(ctx.raw);}}}}}}}},
-                    scales:{{
-                        x:{{ticks:{{color:_ARIA_TC,font:{{size:8}}}},grid:{{display:false}},border:{{display:false}}}},
-                        y:{{ticks:{{color:_ARIA_TC,font:{{size:8}}}},grid:{{display:false}},border:{{display:false}}}}
-                    }}, animation:{{duration:300}}}}
-            }});
-        }}
-    }}
+    /* ── 5. Line chart stays as the 12M monthly revenue trend — no change on filter ── */
 }}
 """
 
@@ -1580,7 +1578,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v21 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v22 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
