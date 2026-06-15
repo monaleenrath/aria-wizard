@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v27"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v29"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -1476,14 +1476,20 @@ function ariaEdDim(pill) {{
         kpi_order_js       = json.dumps(sc_show_kpis)
         dim_member_js      = json.dumps(payload.get("dim_member_kpis", {}))
         member_series_js   = json.dumps(payload.get("dim_member_per_kpi_series", {}))
-        # Original (unfiltered) per-KPI series — for restoring on "All"
-        _sc_per_kpi = payload.get("per_kpi_series", {})
-        orig_series_js     = json.dumps({kn: _sc_per_kpi.get(kn, []) for kn in sc_show_kpis})
+        # Original (unfiltered) per-KPI series + date labels — for restoring on "All"
+        _sc_per_kpi       = payload.get("per_kpi_series", {})
+        _sc_per_kpi_dates = payload.get("per_kpi_dates", [])
+        orig_series_js    = json.dumps({kn: _sc_per_kpi.get(kn, []) for kn in sc_show_kpis})
+        orig_labels_js    = json.dumps({
+            kn: _sc_per_kpi_dates[:len(_sc_per_kpi.get(kn, []))] if _sc_per_kpi_dates else []
+            for kn in sc_show_kpis
+        })
         filter_js = f"""
 var ARIA_KPI_ORDER        = {kpi_order_js};
 var ARIA_DIM_MEMBER_KPIS  = {dim_member_js};
 var ARIA_SC_MEMBER_SERIES = {member_series_js};
 var ARIA_SC_ORIG_SERIES   = {orig_series_js};
+var ARIA_SC_ORIG_LABELS   = {orig_labels_js};
 
 /* format a raw pct number → {{text, color}} */
 function _ariaPct(p) {{
@@ -1538,12 +1544,15 @@ function ariaFilter(sel) {{
         /* ── sparkline ── */
         var chart = ARIA_CHARTS['sc_spark_' + i];
         if (chart) {{
-            var newSeries = (mSeries && mSeries[kn] && mSeries[kn].length > 1)
-                            ? mSeries[kn]
-                            : (ARIA_SC_ORIG_SERIES[kn] || null);
+            var usingMember = (mSeries && mSeries[kn] && mSeries[kn].length > 1);
+            var newSeries = usingMember ? mSeries[kn] : (ARIA_SC_ORIG_SERIES[kn] || null);
             if (newSeries && newSeries.length > 1) {{
                 chart.data.datasets[0].data = newSeries;
-                chart.data.labels = newSeries.map(function(_, j) {{ return j; }});
+                /* Restore original date labels on "All"; use indices for member series */
+                var origLbls = ARIA_SC_ORIG_LABELS[kn];
+                chart.data.labels = (!usingMember && origLbls && origLbls.length > 0)
+                    ? origLbls
+                    : newSeries.map(function(_, j) {{ return j; }});
                 chart.update('none');
             }}
         }}
@@ -1675,26 +1684,60 @@ function ariaFilter(sel) {{
         }}
     }}
 
-    /* ── 4. Waterfall — rebuild from single-dim driver deltas ── */
-    var drvs = ARIA_DIM_DRIVERS[dim] || [];
-    /* Compute Prior/Current from absolute member values (avoids ratio KPI scale mismatch) */
-    var curr_total = 0, prior_total = 0;
-    drvs.forEach(function(s) {{
-        curr_total  += (s.value  || 0);
-        prior_total += ((s.value || 0) - (s.delta || 0));
-    }});
-    var lifts = drvs.filter(function(x){{return x.delta>0;}}).sort(function(a,b){{return b.delta-a.delta;}}).slice(0,3);
-    var drags = drvs.filter(function(x){{return x.delta<0;}}).sort(function(a,b){{return a.delta-b.delta;}}).slice(0,2);
-    var steps = lifts.concat(drags);
-    var wfLabels=['Prior'], wfData=[[0,Math.round(prior_total*100)/100]], wfColors=['#60A5FA'], cum=prior_total;
-    steps.forEach(function(s) {{
-        var hi = (val!=='All' && s.member===val);
-        wfLabels.push(s.member.substring(0,12));
-        wfData.push([Math.round(cum*100)/100, Math.round((cum+s.delta)*100)/100]);
-        wfColors.push(s.delta>=0 ? (hi?'#10B981':'#34D399') : (hi?'#EF4444':'#F87171'));
-        cum += s.delta;
-    }});
-    wfLabels.push('Current'); wfData.push([0,Math.round(curr_total*100)/100]); wfColors.push('#60A5FA');
+    /* ── 4. Waterfall — rebuild using ALL dim members from ARIA_DIM_DATA ── */
+    /* ARIA_DIM_DRIVERS only holds top-N drivers and may omit members with small deltas.
+       Instead, start from ARIA_DIM_DATA (complete member list + current values) and
+       merge deltas from ARIA_DIM_DRIVERS; missing members get delta = 0. */
+    var d4    = ARIA_DIM_DATA[dim];
+    var drvList4 = ARIA_DIM_DRIVERS[dim] || [];
+    var drvMap4  = {{}};
+    drvList4.forEach(function(s) {{ drvMap4[s.member] = s; }});
+    var wfLabels, wfData, wfColors;
+    if (d4 && d4.labels && d4.labels.length > 0) {{
+        var allSteps4 = d4.labels.map(function(m, idx) {{
+            var drv = drvMap4[m];
+            return {{ member: m,
+                      value:  drv ? drv.value : (d4.values[idx] || 0),
+                      delta:  drv ? drv.delta : 0 }};
+        }});
+        var curr4  = allSteps4.reduce(function(a,s){{ return a+(s.value||0);  }}, 0);
+        var prior4 = allSteps4.reduce(function(a,s){{ return a+((s.value||0)-(s.delta||0)); }}, 0);
+        var lifts4 = allSteps4.filter(function(x){{return x.delta>0;}}).sort(function(a,b){{return b.delta-a.delta;}}).slice(0,3);
+        var drags4 = allSteps4.filter(function(x){{return x.delta<0;}}).sort(function(a,b){{return a.delta-b.delta;}}).slice(0,2);
+        var steps4 = lifts4.concat(drags4);
+        /* Always include selected member even if its delta is 0 */
+        if (val!=='All' && !steps4.some(function(s){{return s.member===val;}})) {{
+            var sel4 = allSteps4.find(function(s){{return s.member===val;}});
+            if (sel4) steps4.push(sel4);
+        }}
+        wfLabels=['Prior']; wfData=[[0,Math.round(prior4*100)/100]]; wfColors=['#60A5FA'];
+        var cum4=prior4;
+        steps4.forEach(function(s) {{
+            var hi=(val!=='All'&&s.member===val);
+            wfLabels.push(s.member.substring(0,12));
+            wfData.push([Math.round(cum4*100)/100, Math.round((cum4+s.delta)*100)/100]);
+            wfColors.push(s.delta>=0 ? (hi?'#10B981':'#34D399') : (hi?'#EF4444':'#F87171'));
+            cum4+=s.delta;
+        }});
+        wfLabels.push('Current'); wfData.push([0,Math.round(curr4*100)/100]); wfColors.push('#60A5FA');
+    }} else {{
+        /* Fallback to driver list if ARIA_DIM_DATA unavailable for this dim */
+        var drvs=drvList4, curr_total=0, prior_total=0;
+        drvs.forEach(function(s){{curr_total+=(s.value||0);prior_total+=((s.value||0)-(s.delta||0));}});
+        var lifts=drvs.filter(function(x){{return x.delta>0;}}).sort(function(a,b){{return b.delta-a.delta;}}).slice(0,3);
+        var drags=drvs.filter(function(x){{return x.delta<0;}}).sort(function(a,b){{return a.delta-b.delta;}}).slice(0,2);
+        var steps=lifts.concat(drags);
+        wfLabels=['Prior']; wfData=[[0,Math.round(prior_total*100)/100]]; wfColors=['#60A5FA'];
+        var cum=prior_total;
+        steps.forEach(function(s){{
+            var hi=(val!=='All'&&s.member===val);
+            wfLabels.push(s.member.substring(0,12));
+            wfData.push([Math.round(cum*100)/100,Math.round((cum+s.delta)*100)/100]);
+            wfColors.push(s.delta>=0?(hi?'#10B981':'#34D399'):(hi?'#EF4444':'#F87171'));
+            cum+=s.delta;
+        }});
+        wfLabels.push('Current'); wfData.push([0,Math.round(curr_total*100)/100]); wfColors.push('#60A5FA');
+    }}
     var wfChart = ARIA_CHARTS['ds_wfall'];
     if (wfChart) {{
         wfChart.data.labels = wfLabels;
@@ -1764,7 +1807,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v27 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v29 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
