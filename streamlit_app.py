@@ -2396,22 +2396,12 @@ def compute_preview_metrics_v2(
     Returns a dict with the same keys as the old function so all callers
     (build_live_narrative, generate_svg_preview) work unchanged.
     """
-    import traceback as _tb_imp
-    compute_metrics = None
-    analyze_drivers = None
-    drivers_to_dict = None
-    _import_error   = None
     try:
         from agent.metrics_engine import compute_metrics
         from agent.driver_analysis import analyze_drivers, drivers_to_dict
     except ImportError:
-        try:
-            from metrics_engine import compute_metrics
-            from driver_analysis import analyze_drivers, drivers_to_dict
-        except ImportError as _ie:
-            _import_error = f"ImportError: {_ie}\n{_tb_imp.format_exc()[-400:]}"
-            import streamlit as _st_ie
-            _st_ie.session_state["_preview_debug_error"] = _import_error
+        from metrics_engine import compute_metrics
+        from driver_analysis import analyze_drivers, drivers_to_dict
 
     import datetime as _dt
 
@@ -2476,102 +2466,26 @@ def compute_preview_metrics_v2(
     }
 
     # ── Run the actual agent engines ─────────────────────────────────────── #
-    # IMPORTANT: never fall back to compute_preview_metrics() here — that
-    # function returns a flat driver list (losing all 4 dims).  Instead,
-    # catch errors explicitly and build a minimal snapshot from the raw df.
     import traceback as _tb
-    snapshot = None
-    _cm_error = None
-    if compute_metrics is None:
-        # Import failed — error already logged above; snapshot stays None
-        pass
-    else:
-        try:
-            snapshot = compute_metrics(df, config)
-        except Exception as _e:
-            _cm_error = f"compute_metrics failed: {_e}\n{_tb.format_exc()[-600:]}"
-            import streamlit as _st
-            _st.session_state["_preview_debug_error"] = _cm_error
+    try:
+        snapshot = compute_metrics(df, config)
+    except Exception:
+        return compute_preview_metrics(df, kpis_cfg, date_col, timeframe_key)
 
-    # If compute_metrics failed, derive ref date directly from the dataframe
-    if snapshot is None:
-        try:
-            _dates = pd.to_datetime(df[date_col], errors="coerce").dropna()
-            _ref_raw = _dates.max().date()
-        except Exception:
-            _ref_raw = _dt.date.today()
-        ref = _ref_raw
-        # Build a minimal KPI dict so the card still renders
-        _min_kpis: dict = {}
-        for _k in kpis_cfg:
-            if not _k.get("enabled", True):
-                continue
-            _kn = _k["user_name"]
-            try:
-                _df_r = df.copy()
-                _df_r["_date"] = pd.to_datetime(_df_r[date_col], errors="coerce").dt.date
-                _win_start = ref.replace(day=1) if timeframe_key == "mtd" else ref - _dt.timedelta(days=29)
-                _curr = _df_r[(_df_r["_date"] >= _win_start) & (_df_r["_date"] <= ref)]
-                _agg = _k.get("agg", "sum")
-                _col = _k.get("column") or _k.get("num_col", "")
-                if _agg == "sum" and _col in _curr.columns:
-                    _val = float(_curr[_col].sum()) * _k.get("scale", 1)
-                elif _agg == "ratio" and _k.get("num_col") in _curr.columns and _k.get("den_col") in _curr.columns:
-                    _n = float(_curr[_k["num_col"]].sum())
-                    _d = float(_curr[_k["den_col"]].sum())
-                    _val = (_n / _d * _k.get("scale", 1)) if _d else 0.0
-                else:
-                    _val = 0.0
-                _fmt = _k.get("format", "number")
-                if _fmt == "currency":
-                    _vf = f"${_val:,.0f}"
-                elif _fmt == "percent":
-                    _vf = f"{_val:.1f}%"
-                else:
-                    _vf = f"{_val:,.1f}"
-                _min_kpis[_kn] = {"name": _kn, "value": _val, "value_fmt": _vf,
-                                   "mom_pct": None, "yoy_pct": None, "wow_pct": None}
-            except Exception:
-                _min_kpis[_kn] = {"name": _kn, "value": 0.0, "value_fmt": "—",
-                                   "mom_pct": None, "yoy_pct": None, "wow_pct": None}
+    ref = _dt.date.fromisoformat(snapshot.reference_date)
 
-        # Build a minimal stub payload so the rest of this function can fill it
-        import types as _types
-        snapshot = _types.SimpleNamespace(
-            reference_date=str(ref),
-            window_start=str(ref.replace(day=1) if timeframe_key == "mtd" else ref - _dt.timedelta(days=29)),
-            timeframe=timeframe_key,
-            kpis=_min_kpis,
-        )
-        def _to_dict(self):
-            return {
-                "reference_date": self.reference_date,
-                "window_start":   self.window_start,
-                "timeframe":      self.timeframe,
-                "kpis":           self.kpis,
-            }
-        snapshot.to_dict = _types.MethodType(_to_dict, snapshot)
-    else:
-        ref = _dt.date.fromisoformat(snapshot.reference_date)
+    try:
+        drivers_yoy = analyze_drivers(df, config, ref, compare_to="yoy")
+        drivers_raw = drivers_to_dict(drivers_yoy)
+    except Exception:
+        drivers_raw = {}
 
-    if analyze_drivers is not None:
-        try:
-            drivers_yoy = analyze_drivers(df, config, ref, compare_to="yoy")
-            drivers_raw = drivers_to_dict(drivers_yoy)
-        except Exception as _e2:
-            import streamlit as _st2
-            _st2.session_state.setdefault("_preview_debug_error", f"analyze_drivers YoY: {_e2}\n{_tb.format_exc()[-400:]}")
-            drivers_raw = {}
-
-        # DoD drivers as fallback — ensures bar chart + selector pills appear even
-        # when YoY comparison fails (e.g. dataset covers less than one year).
-        try:
-            drivers_dod_obj = analyze_drivers(df, config, ref, compare_to="dod")
-            drivers_dod_raw = drivers_to_dict(drivers_dod_obj)
-        except Exception:
-            drivers_dod_raw = {}
-    else:
-        drivers_raw     = {}
+    # DoD drivers as fallback — ensures bar chart + selector pills appear even
+    # when YoY comparison fails (e.g. dataset covers less than one year).
+    try:
+        drivers_dod_obj = analyze_drivers(df, config, ref, compare_to="dod")
+        drivers_dod_raw = drivers_to_dict(drivers_dod_obj)
+    except Exception:
         drivers_dod_raw = {}
 
     # ── Sparkline — 30-day daily series for the primary KPI ──────────────── #
@@ -2851,7 +2765,10 @@ def compute_preview_metrics_v2(
     #   - flat list [{dimension, member, delta, ...}]  (old format)
     #   - or dict {kpi_name: [...]}                    (agent format)
     # We return the dict format — callers updated to handle both.
-    prim_kpi = next(iter(snapshot.kpis), "KPI") if snapshot.kpis else "KPI"
+    prim_kpi = (
+        snapshot.kpis[next(iter(snapshot.kpis), "")].name
+        if snapshot.kpis else "KPI"
+    )
 
     payload = snapshot.to_dict()   # already has reference_date, window_start,
                                    # timeframe, kpis (with value_fmt, mom_pct etc.)
@@ -5125,18 +5042,12 @@ def step_preview_card():
             f"Role: **{role_cfg.get('title','—')}** · "
             f"Window: **{_atf['label'] if _atf else 'Custom'}** · "
             f"Engine: **{narr.get('model','stub')}** · "
-            f"Drivers: **{sum(len(v) for v in m['drivers'].values()) if isinstance(m.get('drivers'), dict) else len(m.get('drivers', []))}**"
+            f"Drivers: **{len(m.get('drivers', []))}**"
         )
         _r1, _r2 = st.columns([1, 5])
         if _r1.button("🔄 Refresh", use_container_width=True):
             _clear_preview()
             st.rerun()
-
-        # ── Debug banner (shown when compute_metrics failed) ─────────────── #
-        _dbg_err = st.session_state.get("_preview_debug_error")
-        if _dbg_err:
-            with st.expander("⚠️ Preview engine error (click to expand — share with support)", expanded=False):
-                st.code(_dbg_err, language="python")
 
     nav_buttons(back=True, next_label="Next: Set Delivery →")
 
