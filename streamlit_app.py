@@ -5022,7 +5022,7 @@ def step_preview_card():
             # Editorial is compact (~550px natural → ~360px scaled).
             # Scorecard has 9 KPI tiles (~900px → ~585px). Dossier has 4 charts (~1200px → ~780px).
             # Add ~120px buffer so the bottom section is never clipped.
-            _preview_h = {"editorial": 450, "scorecard": 800, "dossier": 770}.get(
+            _preview_h = {"editorial": 460, "scorecard": 780, "dossier": 770}.get(
                 _tmpl_key_now, 620
             )
             components.html(svg, height=_preview_h, scrolling=False)
