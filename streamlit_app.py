@@ -2796,6 +2796,28 @@ def compute_preview_metrics_v2(
     payload["dim_member_monthly"]        = dim_member_monthly_preview
     payload["timeframe_key"]       = timeframe_key
 
+    # ── Safety net: guarantee all business dims appear in dim_member_kpis ───── #
+    # dim_member_kpis_preview may be {} if the computation above threw a silent
+    # exception. Scan dim_cols and back-fill any missing dims directly from the
+    # raw dataframe so that all VIEW BY filter dropdowns always render.
+    try:
+        for _fb_dim in dim_cols[:6]:
+            if _fb_dim in payload["dim_member_kpis"]:
+                continue          # already computed — skip
+            if _fb_dim not in df.columns:
+                continue
+            try:
+                _fb_members = df[_fb_dim].dropna().unique()
+                if len(_fb_members) == 0 or len(_fb_members) > 50:
+                    continue
+                payload["dim_member_kpis"][_fb_dim] = {
+                    str(m): {} for m in sorted(_fb_members, key=str)
+                }
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # ── Target / Achievement KPIs (optional) ──────────────────────────────── #
     # If the user uploaded a target/plan file in Step 2, compute:
     #   - Achievement % = Actual / Target × 100  (per KPI)
