@@ -3333,14 +3333,17 @@ body  { overflow-x: hidden; }
             card.style.transform = 'scale(' + scale + ')';
         }
 
-        // ── 5. Anchor the body to the scaled card height so the html element
-        //       (which inherits iframe height) still shows the card background
-        //       colour rather than transparent/dark Streamlit background.
-        //       Use margin-bottom trick to fill without clipping content.
-        var scaledH = Math.ceil(naturalH * scale);
-        // Set card wrapper height so body shrinks to scaled content
+        // ── 5. Tell Streamlit the exact scaled height so the iframe resizes
+        //       dynamically — handles long Gemini narratives without clipping.
+        var scaledH = Math.ceil(naturalH * scale) + 8;  // +8px breathing room
         card.style.marginBottom = '0';
-        // Let the html element fill via background already set in _base_css
+
+        // Streamlit components.html listens for this postMessage and adjusts
+        // the iframe height to match — works for any content length.
+        window.parent.postMessage(
+            { type: 'streamlit:setFrameHeight', height: scaledH },
+            '*'
+        );
     }
 
     // Fire at 100ms (fast templates), 500ms, 1200ms, 2500ms (slow Chart.js).
