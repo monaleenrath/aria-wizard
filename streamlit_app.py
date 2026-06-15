@@ -2851,10 +2851,7 @@ def compute_preview_metrics_v2(
     #   - flat list [{dimension, member, delta, ...}]  (old format)
     #   - or dict {kpi_name: [...]}                    (agent format)
     # We return the dict format — callers updated to handle both.
-    prim_kpi = (
-        snapshot.kpis[next(iter(snapshot.kpis), "")].name
-        if snapshot.kpis else "KPI"
-    )
+    prim_kpi = next(iter(snapshot.kpis), "KPI") if snapshot.kpis else "KPI"
 
     payload = snapshot.to_dict()   # already has reference_date, window_start,
                                    # timeframe, kpis (with value_fmt, mom_pct etc.)
