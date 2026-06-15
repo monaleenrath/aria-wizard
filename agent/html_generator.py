@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v29"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v30"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -274,17 +274,60 @@ def _dim_groups(all_drivers: list, max_dims: int = 4, max_members: int = 8) -> d
 
 # ── Waterfall data ────────────────────────────────────────────────────────── #
 
-def _waterfall_data(kpis: dict, prim: str, all_drivers: list):
+def _waterfall_data(kpis: dict, prim: str, all_drivers: list,
+                    dim_gs: dict = None, dim_name: str = None):
     """
     Build floating-bar waterfall: [Prior Period → lifts/drags → Current].
     Returns (labels, floats [[start,end]], colors, is_reference).
 
-    Prior/Current are derived from the best dimension's member absolute values
-    (sum of values = Current; sum of values - deltas = Prior).  This avoids
-    a scale mismatch when prim is a ratio KPI (e.g. Profit Margin % = 0.68)
-    whose value would be incommensurable with dollar-scale driver deltas.
+    When dim_gs and dim_name are provided (dossier path), uses ALL members of
+    that dimension (from dim_gs) as the complete member list and merges deltas
+    from all_drivers.  This ensures every member appears — not just the top-N
+    drivers — fixing the case where some members are absent from all_drivers
+    because their deltas were small.
+
+    When dim_gs/dim_name are not provided (scorecard / fallback), reverts to
+    the original behaviour of picking the best dimension from all_drivers.
     """
-    # Group drivers by dimension; pick the dim with the largest total |delta|
+    # ── Preferred path: full dim_gs member list ──────────────────────────────
+    if dim_gs and dim_name and dim_name in dim_gs:
+        _dg = dim_gs[dim_name]
+        _lbl_list = _dg.get("labels", [])
+        _val_list = _dg.get("values", [])
+        # Build per-member delta lookup from all_drivers for this dimension
+        _delta_lkp: dict = {}
+        for _d in all_drivers:
+            if _d.get("dimension") == dim_name:
+                _delta_lkp[str(_d.get("member", ""))] = float(_d.get("delta", 0) or 0)
+        # Assemble steps for every member
+        _steps = [
+            {"member": str(_l), "value": float(_v or 0),
+             "delta": _delta_lkp.get(str(_l), 0.0)}
+            for _l, _v in zip(_lbl_list, _val_list)
+        ]
+        if _steps:
+            current = sum(s["value"] for s in _steps)
+            prior   = sum(s["value"] - s["delta"] for s in _steps)
+            lifts   = sorted([s for s in _steps if s["delta"] > 0],
+                             key=lambda x: x["delta"], reverse=True)[:3]
+            drags   = sorted([s for s in _steps if s["delta"] < 0],
+                             key=lambda x: x["delta"])[:2]
+            labels, floats, colors, is_ref = [], [], [], []
+            labels.append("Prior"); floats.append([0, round(prior, 2)])
+            colors.append("#60A5FA"); is_ref.append(True)
+            cum = prior
+            for s in lifts + drags:
+                delta = s["delta"]
+                labels.append(s["member"][:12])
+                floats.append([round(cum, 2), round(cum + delta, 2)])
+                colors.append("#34D399" if delta >= 0 else "#F87171")
+                is_ref.append(False)
+                cum += delta
+            labels.append("Current"); floats.append([0, round(current, 2)])
+            colors.append("#60A5FA"); is_ref.append(True)
+            return labels, floats, colors, is_ref
+
+    # ── Original path: pick best dim from all_drivers ────────────────────────
     by_dim: dict = {}
     for d in all_drivers:
         dn = d.get("dimension", "")
@@ -297,7 +340,6 @@ def _waterfall_data(kpis: dict, prim: str, all_drivers: list):
         best_dim_drvs = by_dim[best_dim]
 
     if best_dim_drvs:
-        # Use absolute member values for Prior/Current anchors
         current = sum(d.get("value", 0) or d.get("current", 0) or 0 for d in best_dim_drvs)
         prior   = sum(
             (d.get("value", 0) or d.get("current", 0) or 0) - (d.get("delta", 0) or 0)
@@ -308,7 +350,6 @@ def _waterfall_data(kpis: dict, prim: str, all_drivers: list):
         drags = sorted([d for d in best_dim_drvs if d.get("delta", 0) < 0],
                        key=lambda x: x["delta"])[:2]
     else:
-        # Fallback: use KPI-based anchors (only for datasets without drivers)
         pk      = kpis.get(prim, {})
         current = pk.get("value", 0) or 0
         mom_pct = pk.get("mom_pct") or 0
@@ -318,11 +359,7 @@ def _waterfall_data(kpis: dict, prim: str, all_drivers: list):
         drags = sorted([d for d in all_drivers if d.get("delta", 0) < 0],
                        key=lambda x: x["delta"])[:2]
 
-    labels   = []
-    floats   = []
-    colors   = []
-    is_ref   = []
-
+    labels, floats, colors, is_ref = [], [], [], []
     labels.append("Prior"); floats.append([0, round(prior, 2)]); colors.append("#60A5FA"); is_ref.append(True)
     cum = prior
     for d in lifts + drags:
@@ -1443,8 +1480,9 @@ def generate_html_card(narrative, payload: dict, _config: dict,
                     ([k for k in role.get("kpis",[]) if k in kpis] or list(kpis.keys()))[:5])
         if _dn_v:
             chart_js += _chart_donut("ds_donut", _dn_l, _dn_v, accent)
-        # Waterfall
-        wf_l, wf_f, wf_c, _ = _waterfall_data(kpis, prim_real, all_drivers)
+        # Waterfall — pass dim_gs + first_dim so all members show, not just top-N drivers
+        wf_l, wf_f, wf_c, _ = _waterfall_data(kpis, prim_real, all_drivers,
+                                                dim_gs=dim_gs, dim_name=first_dim)
         if wf_f:
             chart_js += _chart_waterfall("ds_wfall", wf_l, wf_f, wf_c, pal)
 
@@ -1807,7 +1845,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v29 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v30 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
