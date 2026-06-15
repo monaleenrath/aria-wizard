@@ -2470,7 +2470,20 @@ def compute_preview_metrics_v2(
     try:
         snapshot = compute_metrics(df, config)
     except Exception:
-        return compute_preview_metrics(df, kpis_cfg, date_col, timeframe_key)
+        _result = compute_preview_metrics(df, kpis_cfg, date_col, timeframe_key)
+        # Inject dim_member_kpis so all dimension filters appear in the preview
+        # even when compute_metrics fails. Built directly from raw dataframe.
+        _dmk = {}
+        for _d in dim_cols:
+            if _d in df.columns:
+                try:
+                    _members = df[_d].dropna().unique()
+                    _dmk[_d] = {str(m): {} for m in sorted(_members, key=str)}
+                except Exception:
+                    pass
+        if _dmk:
+            _result["dim_member_kpis"] = _dmk
+        return _result
 
     ref = _dt.date.fromisoformat(snapshot.reference_date)
 
