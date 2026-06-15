@@ -2581,9 +2581,18 @@ def compute_preview_metrics_v2(
         _df_dm = df.copy()
         _df_dm["_date"] = pd.to_datetime(_df_dm[date_col]).dt.date
         _df_curr_dm = _df_dm[(_df_dm["_date"] >= _thirty_ago) & (_df_dm["_date"] <= ref)]
-        _dim_cols = [c for c in _df_curr_dm.columns
-                     if _df_curr_dm[c].dtype == object and _df_curr_dm[c].nunique() <= 20
-                     and c != date_col][:4]
+        # Use the same priority-sorted dim_cols already computed for analyze_drivers
+        # (date_like filtered, sorted by business relevance) rather than a raw
+        # column-order slice that would pick up Month Name / Quarter / Day of Week.
+        _dim_cols = [c for c in dim_cols if c in _df_curr_dm.columns and
+                     _df_curr_dm[c].nunique() <= 20][:4]
+        # Fallback if dim_cols is somehow empty
+        if not _dim_cols:
+            _date_like_fb = {"date","time","year","month","quarter","week","day","flag"}
+            _dim_cols = [c for c in _df_curr_dm.columns
+                         if _df_curr_dm[c].dtype == object and _df_curr_dm[c].nunique() <= 20
+                         and c != date_col
+                         and not any(d in c.lower() for d in _date_like_fb)][:4]
 
         # Prior period dfs for MoM/YoY
         _win_dm      = (ref - _thirty_ago).days
@@ -3279,7 +3288,9 @@ def generate_svg_preview(narrative_obj, metrics: dict, role_cfg: dict,
     # min-width forces the card to lay out at full size; overflow is hidden so
     # the horizontal scroll bar never appears.
     fluid_css = """<style>
-html, body { margin: 0; padding: 0; overflow: hidden; }
+html, body { margin: 0; padding: 0; }
+html  { min-height: 100%; }
+body  { overflow-x: hidden; }
 .card { min-width: 900px !important; }
 </style>"""
     html = html.replace('</head>', fluid_css + '\n</head>')
@@ -3325,18 +3336,14 @@ html, body { margin: 0; padding: 0; overflow: hidden; }
             card.style.transform = 'scale(' + scale + ')';
         }
 
-        // ── 5. Collapse body to visual height so Streamlit gets right value ─
+        // ── 5. Anchor the body to the scaled card height so the html element
+        //       (which inherits iframe height) still shows the card background
+        //       colour rather than transparent/dark Streamlit background.
+        //       Use margin-bottom trick to fill without clipping content.
         var scaledH = Math.ceil(naturalH * scale);
-        document.body.style.height   = scaledH + 'px';
-        document.body.style.overflow = 'hidden';
-
-        // ── 6. Tell Streamlit to resize the iframe ───────────────────────────
-        // isStreamlitMessage:true is required by Streamlit's component message
-        // handler (both old and new versions) — without it the resize is ignored.
-        window.parent.postMessage(
-            { isStreamlitMessage: true, type: 'streamlit:setFrameHeight', height: scaledH + 24 },
-            '*'
-        );
+        // Set card wrapper height so body shrinks to scaled content
+        card.style.marginBottom = '0';
+        // Let the html element fill via background already set in _base_css
     }
 
     // Fire at 100ms (fast templates), 500ms, 1200ms, 2500ms (slow Chart.js).
@@ -5014,8 +5021,12 @@ def step_preview_card():
             # The fitAndResize script inside the HTML sends a postMessage to
             # Streamlit to collapse the iframe to the card's exact visual height.
             _tmpl_key_now = st.session_state.get("card_template", "editorial")
-            _preview_h = {"editorial": 700, "scorecard": 1300, "dossier": 1500}.get(
-                _tmpl_key_now, 900
+            # Heights are sized to the SCALED card (900px card × ~0.65 scale ≈ 585px).
+            # Editorial is compact (~550px natural → ~360px scaled).
+            # Scorecard has 9 KPI tiles (~900px → ~585px). Dossier has 4 charts (~1200px → ~780px).
+            # Add ~120px buffer so the bottom section is never clipped.
+            _preview_h = {"editorial": 500, "scorecard": 700, "dossier": 920}.get(
+                _tmpl_key_now, 620
             )
             components.html(svg, height=_preview_h, scrolling=False)
         else:
