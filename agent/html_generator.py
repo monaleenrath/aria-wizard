@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v30"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v31"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -864,7 +864,7 @@ def _masthead(payload: dict, role: dict, pal: dict, accent: str,
 
 def _footer(narrative, accent: str, pal: dict) -> str:
     notes = _strip_md(getattr(narrative,"speaker_notes","") or "")
-    notes = _e(notes[:200] + ("…" if len(notes)>200 else ""))
+    notes = _e(notes)
     return f"""
 <div class="footer">
   <div class="footer-lbl">Speaker Notes · What the Board Will Ask</div>
@@ -1117,36 +1117,37 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
   {_masthead(payload, role, pal, accent)}
 
   <!-- ── TOP: headline + secondary KPIs (left) | primary KPI tall box (right) ── -->
-  <div style="display:flex;gap:0;margin-bottom:14px;padding-bottom:14px;
+  <div style="display:flex;gap:0;align-items:flex-start;margin-bottom:10px;padding-bottom:10px;
               border-bottom:1px solid {border}">
     <!-- Left: icon + headline + subtitle + secondary KPIs -->
     <div style="flex:1;padding-right:20px">
-      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
         {icon_html}
         <div style="flex:1">
           <div class="ed-headline">{_e(headline)}</div>
           <div class="ed-sub">{_e(sub_1st)}</div>
         </div>
       </div>
-      {f'<div style="display:flex;flex-wrap:wrap;gap:12px;padding-left:4px">{sec_html}</div>' if sec_html else ''}
+      {f'<div style="display:flex;flex-wrap:wrap;gap:10px;padding-left:4px">{sec_html}</div>' if sec_html else ''}
     </div>
-    <!-- Right: primary KPI spanning full height of top section -->
-    <div style="flex:0 0 175px;padding-left:16px;border-left:1px solid {border};
-                display:flex;flex-direction:column;justify-content:center">
+    <!-- Right: primary KPI tall box -->
+    <div style="flex:0 0 175px;padding-left:16px;border-left:1px solid {border}">
       {stat_strip}
     </div>
   </div>
 
   <!-- ── BOTTOM: strategic overview (left) | signals+bar top, exec dir bottom (right) ── -->
-  <div style="display:flex;gap:0">
-    <!-- Left col: Strategic Overview, full height -->
-    <div style="flex:0 0 28%;padding-right:14px;border-right:1px solid {border}">
+  <div style="display:flex;gap:0;align-items:flex-start">
+    <!-- Left col: Strategic Overview -->
+    <div style="flex:0 0 28%;padding-right:14px">
       {strategic_html}
     </div>
+    <!-- Vertical separator (always full height of whichever col is taller) -->
+    <div style="width:1px;background:{border};flex-shrink:0;align-self:stretch"></div>
     <!-- Middle-right: column flex — signals+bar on top, exec directive below -->
     <div style="flex:1;padding-left:14px;display:flex;flex-direction:column">
       <!-- Top row: Boardroom Signals | BAR Chart -->
-      <div style="display:flex;gap:0;padding-bottom:14px;border-bottom:1px solid {border}">
+      <div style="display:flex;gap:0;padding-bottom:10px;border-bottom:1px solid {border}">
         <div style="flex:1;padding-right:14px;border-right:1px solid {border}">
           {boardroom_html}
         </div>
@@ -1155,7 +1156,7 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
         </div>
       </div>
       <!-- Bottom band: Executive Directive spanning full middle+right width -->
-      <div style="padding-top:12px">
+      <div style="padding-top:8px">
         {exec_dir_html}
       </div>
     </div>
@@ -1845,7 +1846,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v30 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v31 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -1908,11 +1909,17 @@ def html_to_png(html_str: str, width: int = 900, height: int = 520,
             tmp = f.name
         driver.get(f"file://{tmp}")
         time.sleep(wait_ms / 1000)
-        # Fit viewport to card content
+        # Fit viewport to card content — measure, resize, re-measure to catch reflow
         card_h = driver.execute_script(
             "var c=document.querySelector('.card'); return c?c.scrollHeight:document.body.scrollHeight;")
-        driver.set_window_size(width, max(card_h + 40, 200))
-        time.sleep(0.3)
+        driver.set_window_size(width, max(card_h + 80, 200))
+        time.sleep(0.5)
+        # Re-measure in case charts/fonts caused reflow after resize
+        card_h2 = driver.execute_script(
+            "var c=document.querySelector('.card'); return c?c.scrollHeight:document.body.scrollHeight;")
+        if card_h2 > card_h:
+            driver.set_window_size(width, max(card_h2 + 80, 200))
+            time.sleep(0.3)
         png = driver.get_screenshot_as_png()
     finally:
         driver.quit()
