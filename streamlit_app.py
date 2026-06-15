@@ -2722,6 +2722,38 @@ def compute_preview_metrics_v2(
     except Exception:
         dim_member_per_kpi_series_preview = {}
 
+    # ── Ensure all detected dims appear in drivers (editorial dimension pills) ── #
+    # analyze_drivers may return empty lists if the current-period slice has no
+    # data (e.g. timeframe=1d and today has no rows yet).  When that happens
+    # _dim_groups returns {} → only 1 pill in the editorial card.  We fill gaps
+    # by injecting fallback entries aggregated directly from dim_member_kpis.
+    try:
+        _prim_fb_key = next(iter(drivers_raw), next(iter(drivers_dod_raw), None))
+        for _drv_src in (drivers_raw, drivers_dod_raw):
+            if not _prim_fb_key or _prim_fb_key not in _drv_src:
+                continue
+            _existing_dims_fb = {d.get("dimension") for d in _drv_src[_prim_fb_key]}
+            for _dim_fb in dim_cols:
+                if _dim_fb in _existing_dims_fb:
+                    continue
+                # Inject one entry per member using dim_member_kpis aggregate data
+                if _dim_fb in dim_member_kpis_preview:
+                    for _mem_fb, _kpi_vals_fb in dim_member_kpis_preview[_dim_fb].items():
+                        _val_fb = (_kpi_vals_fb.get(_prim_fb_key, {}) or {}).get("value", 0) or 0
+                        _drv_src[_prim_fb_key].append({
+                            "dimension":        _dim_fb,
+                            "member":           str(_mem_fb),
+                            "kpi":              _prim_fb_key,
+                            "current":          round(float(_val_fb), 2),
+                            "prior":            0.0,
+                            "delta":            round(float(_val_fb), 2),
+                            "delta_pct":        None,
+                            "contribution_pct": None,
+                        })
+                    _existing_dims_fb.add(_dim_fb)
+    except Exception:
+        pass
+
     # ── Flatten drivers to a list for backward-compat with callers ────────── #
     # Callers (build_live_narrative, generate_svg_preview) expect either:
     #   - flat list [{dimension, member, delta, ...}]  (old format)
@@ -4977,12 +5009,15 @@ def step_preview_card():
 
         if svg:
             # svg is now a full self-contained HTML string from html_generator.
-            # height=700 is a safe floor so cards are never clipped if the
-            # postMessage resize fires slightly late.  The fitAndResize script
-            # inside the HTML sends {isStreamlitMessage:true, type:
-            # 'streamlit:setFrameHeight', height:scaledH} which Streamlit uses
-            # to collapse the iframe to the card's exact visual height.
-            components.html(svg, height=700, scrolling=False)
+            # Floor height is template-aware: editorial is compact (~700px),
+            # scorecard has 9 KPI tiles (~1300px), dossier has 4 charts (~1500px).
+            # The fitAndResize script inside the HTML sends a postMessage to
+            # Streamlit to collapse the iframe to the card's exact visual height.
+            _tmpl_key_now = st.session_state.get("card_template", "editorial")
+            _preview_h = {"editorial": 700, "scorecard": 1300, "dossier": 1500}.get(
+                _tmpl_key_now, 900
+            )
+            components.html(svg, height=_preview_h, scrolling=False)
         else:
             st.warning(
                 "Card preview unavailable — check agent/html_generator.py is present.",
