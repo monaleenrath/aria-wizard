@@ -1,6 +1,6 @@
 """
 html_generator.py  —  ARIA Briefing Cards  (v5: auto-detect dims when config dims missing from df)
-ARIA_DEPLOY_VERSION = "2026-06-14-v31"   # bump this on every push so you can verify deployment
+ARIA_DEPLOY_VERSION = "2026-06-14-v33"   # bump this on every push so you can verify deployment
 ──────────────────────────────────────────────────────────────────────
 3 Templates:
   1. editorial   — Newsletter / magazine.  Big headline, inline MOM/YOY/WOW
@@ -514,10 +514,10 @@ canvas     {{ display:block; }}
 
 /* ─ Editorial dimension pills ───────────────── */
 .ed-dim-pill {{
-    font-size:7px; font-weight:700; letter-spacing:1px;
+    font-size:9px; font-weight:700; letter-spacing:0.8px;
     text-transform:uppercase; background:transparent;
     border:1px solid {pal['border']}; color:{pal['muted']};
-    border-radius:10px; padding:2px 8px; cursor:pointer;
+    border-radius:10px; padding:3px 10px; cursor:pointer;
     font-family:inherit; transition:all 0.15s;
 }}
 .ed-dim-pill-active, .ed-dim-pill:hover {{
@@ -1101,11 +1101,14 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
                            f'data-dim="{_e(_dk)}" onclick="ariaEdDim(this)" '
                            f'style="--ed-accent:{accent}">{_e(_dk)}</button> ')
         bar_html = (
-            f'<div style="display:flex;align-items:center;justify-content:space-between;'
-            f'flex-wrap:wrap;gap:4px;margin-bottom:6px">'
-            f'<span id="ed-dim-title" class="sec" style="margin-bottom:0">'
+            # Header row: "CATEGORY BREAKDOWN" label
+            f'<div style="margin-bottom:4px">'
+            f'<span id="ed-dim-title" class="sec" style="display:block;margin-bottom:5px">'
             f'{_e(first_dim)} Breakdown</span>'
-            f'<div style="display:flex;flex-wrap:wrap;gap:3px">{_pills_dim}</div>'
+            # Pills row: dedicated row above the bar chart, full width, wraps naturally
+            f'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">'
+            f'{_pills_dim}'
+            f'</div>'
             f'</div>'
             f'<div class="chart-box" style="height:{h}px"><canvas id="ed_bar"></canvas></div>'
         )
@@ -1846,7 +1849,7 @@ function ariaFilter(sel) {{
     )
 
     return f"""<!DOCTYPE html>
-<!-- ARIA_DEPLOY_VERSION=2026-06-14-v31 | {_diag} -->
+<!-- ARIA_DEPLOY_VERSION=2026-06-14-v33 | {_diag} -->
 <html>
 <head>
 <meta charset="utf-8">
