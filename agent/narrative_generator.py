@@ -177,12 +177,10 @@ Address at least one of these proactively inside speaker_notes.
 
 You will receive a JSON payload with:
   — kpis        : metric values with DoD / WoW / MoM / YoY % changes
-  — targets     : target values + achievement_pct per KPI (present only when targets are configured)
+  — targets     : {kpi_name: {target_fmt, achievement_pct}} when provided
   — anomalies   : z-score flagged outliers (direction, value, expected, zscore)
   — drivers     : ranked dimension members by delta impact
   — trend_series: 30-day daily values for the primary KPI (may be absent)
-
-When targets are present, include achievement % in exec_summary S1 (e.g. "…at 94% of target") and in kpi_table_md as an extra "vs Target" column.
 
 Return a JSON object with EXACTLY these keys:
 
