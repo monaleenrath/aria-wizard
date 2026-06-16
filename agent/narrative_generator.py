@@ -177,9 +177,12 @@ Address at least one of these proactively inside speaker_notes.
 
 You will receive a JSON payload with:
   — kpis        : metric values with DoD / WoW / MoM / YoY % changes
+  — targets     : target values + achievement_pct per KPI (present only when targets are configured)
   — anomalies   : z-score flagged outliers (direction, value, expected, zscore)
   — drivers     : ranked dimension members by delta impact
   — trend_series: 30-day daily values for the primary KPI (may be absent)
+
+When targets are present, include achievement % in exec_summary S1 (e.g. "…at 94% of target") and in kpi_table_md as an extra "vs Target" column.
 
 Return a JSON object with EXACTLY these keys:
 
@@ -364,12 +367,13 @@ def _generate_gemini(payload: dict, cfg: dict, role_config: dict) -> NarrativeRe
     from google.genai import types
     from google.genai.errors import ServerError
 
-    api_key = os.getenv("GEMINI_API_KEY")
+    # Support per-test-case key rotation via gemini_api_key_env in llm config
+    _key_env_var = cfg.get("gemini_api_key_env", "GEMINI_API_KEY")
+    api_key = os.getenv(_key_env_var) or os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "GEMINI_API_KEY is not set. Get a free key (no credit card) at "
-            "https://aistudio.google.com/app/apikey and add it to your "
-            ".env or GitHub Secrets."
+            f"Gemini API key not set. Expected env var: {_key_env_var} "
+            "(or fallback GEMINI_API_KEY). Add it to your .env or GitHub Secrets."
         )
 
     client     = genai.Client(api_key=api_key)
@@ -499,6 +503,13 @@ def _generate_stub(payload: dict, cfg: dict, role_config: dict) -> NarrativeResu
     tier             = role_config.get("tier") or _tier(role_title)
     vocab            = _TIER_VOCAB[tier]
 
+    def _get_margin(kpis: dict) -> dict:
+        """Return the margin KPI dict regardless of exact name (handles 'Margin%' vs 'Margin %')."""
+        for key in ("Margin%", "Margin %", "Profit Margin %", "Gross Margin %"):
+            if key in kpis:
+                return kpis[key]
+        return {}
+
     # Prefer role's primary KPI; fall back to Sales
     primary = kpis.get(primary_kpi_name) or kpis.get("Sales", {})
     sales   = kpis.get("Sales",   {})
@@ -550,16 +561,17 @@ def _generate_stub(payload: dict, cfg: dict, role_config: dict) -> NarrativeResu
 
     # Tier-adapted headline framing
     if tier == "c_suite":
+        _margin_kpi = _get_margin(kpis)
         if lead_value > 0.05:
             headline = (
                 f"{primary.get('value_fmt','—')} {primary_kpi_name} — margin held at "
-                f"{kpis.get('Margin%',{}).get('value_fmt','—')}, "
+                f"{_margin_kpi.get('value_fmt','—')}, "
                 f"{period} gap +{lead_value*100:.1f}%"
             )
         else:
             headline = (
                 f"{primary_kpi_name} {period} gap at {lead_value*100:+.1f}% — "
-                f"margin {kpis.get('Margin%',{}).get('value_fmt','—')}, board alert"
+                f"margin {_margin_kpi.get('value_fmt','—')}, board alert"
             )
     elif tier == "commercial":
         direction_word = "up" if lead_value >= 0 else "down"
@@ -570,9 +582,9 @@ def _generate_stub(payload: dict, cfg: dict, role_config: dict) -> NarrativeResu
         )
     elif tier == "operations":
         headline = (
-            f"{badge_prefix} · {orders.get('value_fmt','—')} orders "
+            f"{badge_prefix} · {primary.get('value_fmt','—')} {primary_kpi_name} "
             f"{vocab['momentum_verb'] if primary_yoy>=0 else vocab['drag_verb']} — "
-            f"{primary_kpi_name} {period} {lead_value*100:+.1f}%"
+            f"{period} {lead_value*100:+.1f}%"
         )
     elif tier == "management":
         sec_clause = (
@@ -596,12 +608,25 @@ def _generate_stub(payload: dict, cfg: dict, role_config: dict) -> NarrativeResu
         )
 
     # ── Exec Summary — three-act: Fact → Cause → Implication ────────────── #
-    # ACT 1: The fact
+    # Build target achievement clause first — must be defined before act1 uses it
+    targets = payload.get("targets", {})
+    _t_primary = targets.get(primary_kpi_name, {})
+    _p_ach = _t_primary.get("achievement_pct")
+    _p_tgt = _t_primary.get("target_fmt", "")
+    if _p_ach is not None:
+        _target_clause = (
+            f" Target: {_p_tgt} — achieved {_p_ach:.0f}%."
+            if _p_tgt else f" Target achievement: {_p_ach:.0f}%."
+        )
+    else:
+        _target_clause = ""
+
+    # ACT 1: The fact (with optional target achievement)
     momentum_clause = f", {momentum}" if momentum else ""
     act1 = (
         f"{primary_kpi_name} closed at {primary.get('value_fmt','—')} "
         f"({_fmt_delta(primary.get('yoy_pct'))} YoY, "
-        f"{_fmt_delta(primary.get('mom_pct'))} MoM{momentum_clause})."
+        f"{_fmt_delta(primary.get('mom_pct'))} MoM{momentum_clause}).{_target_clause}"
     )
 
     # ACT 2: The cause
@@ -623,12 +648,13 @@ def _generate_stub(payload: dict, cfg: dict, role_config: dict) -> NarrativeResu
     # ACT 3: The implication for this role
     if tier == "c_suite":
         margin_val = profit.get("value", 0) / sales.get("value", 1) if sales.get("value") else 0
+        _margin_fmt = _get_margin(kpis).get('value_fmt', '—')
         if top_signal:
             act3 = f"Watch-out: {top_signal} — review capital allocation before the next board touchpoint."
         elif margin_val > 0.15:
-            act3 = f"Margin at {kpis.get('Margin%',{}).get('value_fmt','—')} — growth quality intact, no immediate reforecast needed."
+            act3 = f"Margin at {_margin_fmt} — growth quality intact, no immediate reforecast needed."
         else:
-            act3 = f"Margin at {kpis.get('Margin%',{}).get('value_fmt','—')} — below threshold, worth a capital-allocation call this week."
+            act3 = f"Margin at {_margin_fmt} — below threshold, worth a capital-allocation call this week."
     elif tier == "commercial":
         if top_signal:
             act3 = f"Commercial signal: {top_signal} — act on mix or pricing before end of day."
@@ -657,19 +683,28 @@ def _generate_stub(payload: dict, cfg: dict, role_config: dict) -> NarrativeResu
 
     exec_summary = f"{act1} {act2} {act3}"
 
-    # ── KPI table — role-filtered ────────────────────────────────────────── #
+    # ── KPI table — role-filtered + optional achievement % ─────────────── #
+    targets = payload.get("targets", {})
+
     def row(name, k):
+        t = targets.get(name, {})
+        ach = t.get("achievement_pct")
+        ach_col = f" {ach:.0f}% of target |" if ach is not None else " — |"
         return (
             f"| {name} | {k.get('value_fmt','—')} | "
             f"{_fmt_delta(k.get('dod_pct'))} | "
             f"{_fmt_delta(k.get('wow_pct'))} | "
             f"{_fmt_delta(k.get('mom_pct'))} | "
             f"{_fmt_delta(k.get('yoy_pct'))} |"
+            f"{ach_col}"
         )
+    has_targets = bool(targets)
+    hdr_suffix  = " vs Target |" if has_targets else ""
+    sep_suffix  = "---|" if has_targets else ""
     kpi_rows = "\n".join(row(n, kpis[n]) for n in role_kpi_list if n in kpis)
     kpi_table_md = (
-        "| Metric | Value | DoD | WoW | MoM | YoY |\n"
-        "|---|---|---|---|---|---|\n" + kpi_rows
+        f"| Metric | Value | DoD | WoW | MoM | YoY |{hdr_suffix}\n"
+        f"|---|---|---|---|---|---|{sep_suffix}\n" + kpi_rows
     )
 
     # ── Driver bullets — tier-adapted verbs + compound signal ───────────── #
@@ -827,9 +862,10 @@ def _generate_stub(payload: dict, cfg: dict, role_config: dict) -> NarrativeResu
     )
 
     if tier == "c_suite":
+        _margin_fmt_sn = _get_margin(kpis).get('value_fmt', '—')
         first_q = (
             "They will ask whether this growth is margin-accretive — answer: "
-            f"margin sits at {kpis.get('Margin%',{}).get('value_fmt','—')}, "
+            f"margin sits at {_margin_fmt_sn}, "
             f"{'within acceptable range' if (profit.get('value',0) / sales.get('value',1) if sales.get('value') else 0) > 0.12 else 'below threshold — have the capital-allocation slide ready'}."
         )
         speaker_notes = f"{first_q}{signal_note} {bright_line}"
