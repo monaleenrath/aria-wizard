@@ -4627,6 +4627,12 @@ def step_set_delivery():
     st.session_state.delivery["email"] = st.toggle("📧 Email",
                                                      value=st.session_state.delivery["email"])
     if st.session_state.delivery["email"]:
+        st.info(
+            "📬 **Email delivery is coming soon.** This option is not available in the current version — "
+            "your briefing card won't be sent by email just yet. "
+            "For now, please use Slack or Teams to receive your daily card.",
+            icon=None,
+        )
         em1, em2 = st.columns([11, 1])
         st.session_state.email_recipient = em1.text_input(
             "Recipient email address", placeholder="you@example.com",
