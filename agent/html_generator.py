@@ -489,11 +489,12 @@ canvas     {{ display:block; }}
 
 /* ─ Footer ───────────────────────────────── */
 .footer      {{ background:{pal['footer_bg']}; margin:14px -28px 0;
-                padding:10px 28px; border-top:1px solid {pal['border']}; }}
+                padding:10px 28px 24px; border-top:1px solid {pal['border']}; }}
 .footer-lbl  {{ font-size:7px; font-weight:700; letter-spacing:4px;
                 color:{accent}; margin-bottom:4px; }}
 .footer-text {{ font-size:9px; color:{pal['subtext']}; font-style:italic;
-                font-family:Georgia,serif; opacity:0.85; }}
+                font-family:Georgia,serif; opacity:0.85;
+                line-height:1.6; overflow:visible; white-space:normal; }}
 
 /* ─ Editorial specific ───────────────────── */
 .ed-hero     {{ display:flex; align-items:center; gap:18px;
@@ -1212,6 +1213,7 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
                    f'<span class="filter-lbl">View by</span> {sels}</div>')
 
     # ── KPI tiles ─────────────────────────────────────────────────────────── #
+    payload_targets = payload.get("targets", {})
     tiles_html = ""
     for i, kn in enumerate(show_kpis):
         kd  = kpis[kn]
@@ -1220,10 +1222,18 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
         ys, yc = _fmt_pct(kd.get("yoy_pct"))
         ws, wc = _fmt_pct(kd.get("wow_pct"))
         rag    = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
-        target_delta = kd.get("target_pct")
+        # Achievement badge — prefer payload["targets"] over legacy kpi target_pct
         target_html  = ""
-        if target_delta is not None:
-            ts, tc_ = _fmt_pct(target_delta)
+        _t_entry = payload_targets.get(kn, {})
+        ach_pct  = _t_entry.get("achievement_pct")
+        if ach_pct is not None:
+            ach_color = "#22c55e" if ach_pct >= 100 else ("#f59e0b" if ach_pct >= 80 else "#ef4444")
+            target_html = (
+                f'<div style="font-size:8px;font-weight:700;color:{ach_color};'
+                f'margin-top:2px">{ach_pct:.0f}% of target</div>'
+            )
+        elif kd.get("target_pct") is not None:
+            ts, tc_ = _fmt_pct(kd.get("target_pct"))
             target_html = (f'<div class="kpi-d" style="color:{tc_};font-size:8px">'
                            f'vs Target {_e(ts)}</div>')
         val_cls = "sm" if len(str(val)) > 8 else ""
@@ -1915,7 +1925,7 @@ def html_to_png(html_str: str, width: int = 900, height: int = 520,
         # Fit viewport to card content — measure, resize, re-measure to catch reflow
         card_h = driver.execute_script(
             "var c=document.querySelector('.card'); return c?c.scrollHeight:document.body.scrollHeight;")
-        driver.set_window_size(width, max(card_h + 80, 200))
+        driver.set_window_size(width, max(card_h + 160, 200))
         time.sleep(0.5)
         # Re-measure in case charts/fonts caused reflow after resize
         card_h2 = driver.execute_script(
