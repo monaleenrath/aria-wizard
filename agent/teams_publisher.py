@@ -18,8 +18,35 @@ import requests
 log = logging.getLogger(__name__)
 
 
+def _build_teams_actions(card_url: Optional[str] = None) -> list:
+    """Build the potentialAction list for the Teams MessageCard."""
+    actions = [
+        {
+            "@type": "OpenUri",
+            "name": "Open Tableau Dashboard",
+            "targets": [{
+                "os": "default",
+                "uri": "https://public.tableau.com/app/profile/mona7677/viz/Superstore_17790771422410/Overview",
+            }],
+        }
+    ]
+    if card_url:
+        actions.insert(0, {
+            "@type": "OpenUri",
+            "name": "🔗 Open Interactive Card",
+            "targets": [{"os": "default", "uri": card_url}],
+        })
+    return actions
+
+
 def post_to_teams(narrative, config: dict,
-                  webhook_url: Optional[str] = None) -> dict:
+                  webhook_url: Optional[str] = None,
+                  card_url: Optional[str] = None) -> dict:
+    """
+    Post the briefing to Teams.
+    card_url: optional GitHub Pages URL for the interactive HTML card; shown
+              as an 'Open Interactive Card' button in the potentialAction bar.
+    """
     cfg = config.get("delivery", {}).get("teams", {})
     title_prefix = cfg.get("title_prefix", "Daily Performance Briefing")
 
@@ -61,16 +88,7 @@ def post_to_teams(narrative, config: dict,
                 "text": narrative.speaker_notes,
             },
         ],
-        "potentialAction": [
-            {
-                "@type": "OpenUri",
-                "name": "Open Tableau Dashboard",
-                "targets": [{
-                    "os": "default",
-                    "uri": "https://public.tableau.com/app/profile/mona7677/viz/Superstore_17790771422410/Overview",
-                }],
-            }
-        ],
+        "potentialAction": _build_teams_actions(card_url),
     }
 
     log.info("Posting briefing to Teams (%d sections)", len(payload["sections"]))
