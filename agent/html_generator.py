@@ -981,6 +981,7 @@ def _narrative_section(narrative, pal: dict, accent: str,
 # TEMPLATE 1 — EDITORIAL  (Newsletter / Magazine)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
     accent      = role.get("accent_color","#F59E0B")
     prim, kpis, all_drivers = _resolve_kpis(payload, role)
@@ -1000,7 +1001,7 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
     # Domain icon
     icon_html = _domain_icon_svg(role, accent, 48)
 
-    # Primary KPI — right tall box (MoM / YoY as bordered pill boxes)
+    # Primary KPI — right tall box
     def _kpi_pill_box(label, val, color):
         if val == "—": return ""
         return (f'<div style="flex:1;min-width:58px;border:1px solid {color}55;'
@@ -1016,14 +1017,14 @@ def _tmpl_editorial(narrative, payload: dict, role: dict, pal: dict) -> str:
         f'text-transform:uppercase;margin-bottom:6px">{_e(prim)}</div>'
         f'<div style="font-size:32px;font-weight:800;color:{pal["text"]};'
         f'font-family:Georgia,serif;line-height:1.0;margin-bottom:10px">{pval}</div>'
-        f'<div style="display:flex;gap:6px">'
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap">'
         + _kpi_pill_box("MoM", ms, mc)
         + _kpi_pill_box("YoY", ys, yc)
         + (_kpi_pill_box("WoW", ws, wc) if ws != "—" else "")
         + '</div>'
     )
 
-    # Secondary KPIs (below headline, inside left section)
+    # Secondary KPIs
     sec_kpis = [k for k in role_kpis if k != prim and k in kpis][:4]
     sec_html = ""
     for sk in sec_kpis:
@@ -1213,7 +1214,6 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
                    f'<span class="filter-lbl">View by</span> {sels}</div>')
 
     # ── KPI tiles ─────────────────────────────────────────────────────────── #
-    payload_targets = payload.get("targets", {})
     tiles_html = ""
     for i, kn in enumerate(show_kpis):
         kd  = kpis[kn]
@@ -1222,20 +1222,6 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
         ys, yc = _fmt_pct(kd.get("yoy_pct"))
         ws, wc = _fmt_pct(kd.get("wow_pct"))
         rag    = _rag_color(kd.get("mom_pct"), kd.get("yoy_pct"))
-        # Achievement badge — prefer payload["targets"] over legacy kpi target_pct
-        target_html  = ""
-        _t_entry = payload_targets.get(kn, {})
-        ach_pct  = _t_entry.get("achievement_pct")
-        if ach_pct is not None:
-            ach_color = "#22c55e" if ach_pct >= 100 else ("#f59e0b" if ach_pct >= 80 else "#ef4444")
-            target_html = (
-                f'<div style="font-size:8px;font-weight:700;color:{ach_color};'
-                f'margin-top:2px">{ach_pct:.0f}% of target</div>'
-            )
-        elif kd.get("target_pct") is not None:
-            ts, tc_ = _fmt_pct(kd.get("target_pct"))
-            target_html = (f'<div class="kpi-d" style="color:{tc_};font-size:8px">'
-                           f'vs Target {_e(ts)}</div>')
         val_cls = "sm" if len(str(val)) > 8 else ""
         # Only show sparkline if we have >1 data point (1D → no line)
         kpi_series = per_kpi_series.get(kn, [])
@@ -1250,7 +1236,6 @@ def _tmpl_scorecard(narrative, payload: dict, role: dict, pal: dict) -> str:
   <div class="kpi-d" id="sc_md_{i}" data-orig="{_e(ms)} MoM" data-oc="{mc}" style="color:{mc}">{_e(ms)} MoM</div>
   <div class="kpi-d" id="sc_yd_{i}" data-orig="{_e(ys)} YoY" data-oc="{yc}" style="color:{yc}">{_e(ys)} YoY</div>
   {f'<div class="kpi-d" style="color:{wc}">{_e(ws)} WoW</div>' if ws != "—" else ''}
-  {target_html}
 </div>"""
 
     return f"""
@@ -1458,7 +1443,7 @@ def generate_html_card(narrative, payload: dict, _config: dict,
             chart_js += _chart_bar_h("ed_bar", d["labels"], d["values"], accent, pal)
 
     elif tmpl_key == "scorecard":
-        # Per-KPI sparklines — each tile gets its own KPI's time series
+        # Per-KPI sparklines
         per_kpi_series = payload.get("per_kpi_series", {})
         per_kpi_dates  = payload.get("per_kpi_dates", [])
         sc_role_kpis = role.get("kpis", list(kpis.keys()))
@@ -1512,8 +1497,8 @@ function ariaEdDim(pill) {{
     if (!d) return;
     var chart = ARIA_CHARTS['ed_bar'];
     if (!chart) return;
-    chart.data.labels               = d.labels;
-    chart.data.datasets[0].data     = d.values;
+    chart.data.labels           = d.labels;
+    chart.data.datasets[0].data = d.values;
     chart.update('none');
     var t = document.getElementById('ed-dim-title');
     if (t) t.textContent = dim + ' Breakdown';
@@ -1522,7 +1507,7 @@ function ariaEdDim(pill) {{
     }});
 }}"""
     elif tmpl_key == "scorecard":
-        # Scorecard: filter updates KPI tile values + MoM/YoY + sparklines
+        # Scorecard: filter updates KPI tile values + MoM/YoY + sparklines + target sparklines
         sc_role_kpis = role.get("kpis", list(kpis.keys()))
         sc_show_kpis = ([k for k in sc_role_kpis if k in kpis] or list(kpis.keys()))[:9]
         kpi_order_js       = json.dumps(sc_show_kpis)
@@ -1643,19 +1628,19 @@ function ariaFilter(sel) {{
         _tc  = pal["muted"]
         _sub = pal["subtext"]
         filter_js = f"""
-var ARIA_DS_KPIS           = {ds_kpi_order_js};
-var ARIA_DIM_MEMBER_KPIS   = {ds_dim_member_js};
-var ARIA_DIM_MONTHLY       = {_ds_dim_monthly};
-var ARIA_ACCENT            = '{accent}';
-var ARIA_PALETTE           = {palette_js};
-var ARIA_DIM_DATA        = {dim_data_json};
-var ARIA_DIM_DRIVERS     = {dim_drivers_js};
-var _ARIA_MONTHLY_LABELS = {monthly_labels_js};
-var _ARIA_MONTHLY_VALUES = {monthly_vals_js};
-var _ARIA_PRIOR_VAL      = {round(_prior_val, 2)};
-var _ARIA_CURR_VAL       = {round(_curr_val, 2)};
-var _ARIA_TC             = '{_tc}';
-var _ARIA_SUB            = '{_sub}';
+var ARIA_DS_KPIS              = {ds_kpi_order_js};
+var ARIA_DIM_MEMBER_KPIS      = {ds_dim_member_js};
+var ARIA_DIM_MONTHLY          = {_ds_dim_monthly};
+var ARIA_ACCENT               = '{accent}';
+var ARIA_PALETTE              = {palette_js};
+var ARIA_DIM_DATA             = {dim_data_json};
+var ARIA_DIM_DRIVERS          = {dim_drivers_js};
+var _ARIA_MONTHLY_LABELS      = {monthly_labels_js};
+var _ARIA_MONTHLY_VALUES      = {monthly_vals_js};
+var _ARIA_PRIOR_VAL           = {round(_prior_val, 2)};
+var _ARIA_CURR_VAL            = {round(_curr_val, 2)};
+var _ARIA_TC                  = '{_tc}';
+var _ARIA_SUB                 = '{_sub}';
 
 function _ariaPct(p) {{
     if (p === null || p === undefined) return {{text:'—', color:'#888'}};
@@ -1693,7 +1678,7 @@ function ariaFilter(sel) {{
         }}
     }});
 
-    /* ── 2. Bar chart — switch dim, highlight member ── */
+    /* ── 2. Bar chart — switch dim, highlight member, update target markers ── */
     var d = ARIA_DIM_DATA[dim];
     if (d) {{
         var barChart = ARIA_CHARTS['ds_dimbar'];
