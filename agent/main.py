@@ -43,13 +43,24 @@ def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
       GITHUB_REPOSITORY_OWNER — set automatically by GitHub Actions
     """
     _log = logging.getLogger("agent.main")
-    token      = os.getenv("ARIA_CARDS_PAT", "")
-    owner      = os.getenv("GITHUB_REPOSITORY_OWNER", "")
+    # Prefer a dedicated PAT; fall back to GITHUB_TOKEN (available in Actions by default)
+    token      = os.getenv("ARIA_CARDS_PAT") or os.getenv("GITHUB_TOKEN", "")
     cards_repo = os.getenv("ARIA_CARDS_REPO", "aria-cards")
     branch     = "gh-pages"
 
+    # Derive owner from GITHUB_REPOSITORY_OWNER or GITHUB_REPOSITORY (Actions built-in)
+    owner = os.getenv("GITHUB_REPOSITORY_OWNER", "")
+    if not owner:
+        gh_repo = os.getenv("GITHUB_REPOSITORY", "")  # "owner/repo"
+        owner = gh_repo.split("/")[0] if "/" in gh_repo else ""
+
+    # When using GITHUB_TOKEN the cards must live in the same repo — override if default
+    if not os.getenv("ARIA_CARDS_PAT") and os.getenv("GITHUB_TOKEN") and cards_repo == "aria-cards":
+        cards_repo = os.getenv("ARIA_CARDS_REPO",
+                               os.getenv("GITHUB_REPOSITORY", "").split("/")[-1] or "aria-cards")
+
     if not token or not owner:
-        _log.info("ARIA_CARDS_PAT / GITHUB_REPOSITORY_OWNER not set — skipping Pages publish.")
+        _log.info("No GitHub token / owner available — skipping Pages publish.")
         return ""
 
     card_url = f"https://{owner}.github.io/{cards_repo}/cards/{ref_date}/{role}.html"
@@ -111,7 +122,7 @@ def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
 
     _log.error("Failed to publish card (HTTP %s): %s", code, result.get("message", ""))
     return ""
-from agent.metrics_engine import compute_metrics
+from agent.metrics_engine import compute_metrics, compute_target_achievement, fill_achievement
 try:
     from agent.driver_analysis import analyze_drivers, drivers_to_dict, DRIVER_ANALYSIS_VERSION
 except ImportError:
@@ -186,6 +197,21 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
     snapshot = compute_metrics(df, config, reference_date=ref_date_obj)
     log.info("Reference date: %s | KPIs: %d | Anomalies: %d",
              snapshot.reference_date, len(snapshot.kpis), len(snapshot.anomalies))
+
+    # 2b — TARGET ACHIEVEMENT ------------------------------------------------ #
+    _target_path = config["data"].get("target_excel_path", "")
+    _targets: dict = {}
+    if _target_path:
+        import datetime as _dt2
+        _ref = _dt2.date.fromisoformat(snapshot.reference_date)
+        _kpi_cfgs = config.get("metrics", {}).get("kpis", [])
+        _timeframe = config.get("metrics", {}).get("default_timeframe",
+                     config.get("metrics", {}).get("timeframe", "mtd"))
+        _targets_raw = compute_target_achievement(
+            _target_path, _kpi_cfgs, _ref, _timeframe
+        )
+        _targets = fill_achievement(_targets_raw, snapshot.kpis)
+        log.info("Targets loaded: %d KPIs matched", len(_targets))
 
     # 3 — DRIVERS ---------------------------------------------------------- #
     import datetime as _dt
@@ -467,6 +493,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
 
     payload = {
         **snapshot.to_dict(),
+        "targets": _targets,
         "drivers": drivers_to_dict(drivers_yoy),
         "drivers_dod": drivers_to_dict(drivers_dod),
         "daily_sales_30d":     daily_sales_30d,
