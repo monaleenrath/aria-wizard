@@ -108,7 +108,7 @@ def _direction(delta: Optional[float], threshold: float = 0.005) -> str:
 
 
 def _aggregate(df: pd.DataFrame, kpi_cfg: dict) -> float:
-    col = kpi_cfg["column"]
+    col = kpi_cfg.get("column", "")   # ratio KPIs use num_col/den_col — column may be absent
     agg = kpi_cfg["agg"]
     if df.empty:
         return 0.0
@@ -405,3 +405,102 @@ def compute_metrics(
         anomalies=anomalies,
         trend_summary=trend,
     )
+
+
+# ── Target achievement ───────────────────────────────────────────────────── #
+
+def compute_target_achievement(
+    target_path: str,
+    kpi_cfgs: list,
+    reference_date: date,
+    timeframe: str,
+) -> Dict[str, dict]:
+    """
+    Load the target Excel file and compute achievement % for each KPI.
+
+    Target files must have a 'Month' column (YYYY-MM string) and columns
+    named 'Target_{column_name}' matching each KPI's `column` field.
+
+    Returns:
+        {kpi_name: {"target": float, "target_fmt": str, "achievement_pct": float}}
+        Only KPIs with a matching Target_ column are included.
+    """
+    try:
+        tdf = pd.read_excel(target_path, engine="openpyxl")
+    except Exception as exc:
+        log.warning("Target file not readable (%s): %s", target_path, exc)
+        return {}
+
+    if "Month" not in tdf.columns:
+        log.warning("Target file has no 'Month' column — skipping achievement.")
+        return {}
+
+    # Determine which months to include based on timeframe
+    ref_ym  = f"{reference_date.year}-{reference_date.month:02d}"
+    q_start = date(reference_date.year, ((reference_date.month - 1) // 3) * 3 + 1, 1)
+
+    if timeframe in ("mtd", "wtd", "1d"):
+        months = [ref_ym]
+    elif timeframe == "qtd":
+        months = [
+            f"{date(q_start.year, q_start.month + i, 1).year}-"
+            f"{date(q_start.year, q_start.month + i, 1).month:02d}"
+            for i in range(3)
+            if q_start.month + i <= 12 and
+               date(q_start.year, q_start.month + i, 1) <= reference_date
+        ]
+    elif timeframe == "ytd":
+        months = [f"{reference_date.year}-{m:02d}" for m in range(1, reference_date.month + 1)]
+    else:
+        months = [ref_ym]
+
+    tdf["Month"] = tdf["Month"].astype(str).str[:7]
+    period_df = tdf[tdf["Month"].isin(months)]
+    if period_df.empty:
+        log.warning("No target rows found for months %s in %s", months, target_path)
+        return {}
+
+    # Days-in-month pro-rate for 1d timeframe
+    import calendar
+    days_in_month = calendar.monthrange(reference_date.year, reference_date.month)[1]
+    elapsed_days  = reference_date.day
+    prorate       = elapsed_days / days_in_month if timeframe == "1d" else 1.0
+
+    results: Dict[str, dict] = {}
+    for kpi_cfg in kpi_cfgs:
+        name    = kpi_cfg.get("name", "")
+        col     = kpi_cfg.get("column", "")
+        agg     = kpi_cfg.get("agg", "sum")
+        fmt     = kpi_cfg.get("format", "currency")
+        if not col:
+            continue  # skip ratio KPIs — no direct column
+
+        t_col = f"Target_{col}"
+        if t_col not in period_df.columns:
+            continue
+
+        # Aggregate target for period
+        if agg == "mean":
+            t_val = float(period_df[t_col].mean())
+        else:
+            t_val = float(period_df[t_col].sum()) * prorate
+
+        if t_val == 0:
+            continue
+
+        results[name] = {
+            "target":          round(t_val, 2),
+            "target_fmt":      _fmt(t_val, fmt),
+            "achievement_pct": round(100.0, 1),  # placeholder — filled below
+        }
+
+    return results
+
+
+def fill_achievement(targets: Dict[str, dict], kpis: Dict[str, "KPI"]) -> Dict[str, dict]:
+    """Cross-reference targets with actuals and compute achievement %."""
+    for name, t in targets.items():
+        if name in kpis and t["target"] != 0:
+            actual = kpis[name].value
+            t["achievement_pct"] = round((actual / t["target"]) * 100, 1)
+    return targets
