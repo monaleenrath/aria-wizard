@@ -3637,6 +3637,12 @@ def _generate_workflow_yaml(del_hour: int, tz: str, provider: str, channels: lis
             "          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}\n"
             "          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}\n"
         )
+    # Always include card publishing tokens (required for interactive HTML card link in Slack)
+    secrets_env += (
+        "          ARIA_CARDS_PAT:    ${{ secrets.ARIA_CARDS_PAT }}\n"
+        "          ARIA_CARDS_REPO:   aria-cards\n"
+        "          GITHUB_TOKEN:      ${{ github.token }}\n"
+    )
 
     return f"""name: ARIA Daily Briefing
 
@@ -3647,6 +3653,8 @@ on:
 jobs:
   aria-daily:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write             # required to publish HTML cards to gh-pages
     steps:
       - uses: actions/checkout@v4
 
