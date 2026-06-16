@@ -299,18 +299,27 @@ def _resolve_channel_id(token: str, channel: str) -> Optional[str]:
 def post_image_to_slack(png_bytes: bytes, narrative, config: dict,
                         bot_token: Optional[str] = None,
                         channel: Optional[str] = None,
-                        initial_comment: Optional[str] = None) -> dict:
+                        initial_comment: Optional[str] = None,
+                        card_url: Optional[str] = None) -> dict:
     """
     Upload a PNG card directly to a Slack channel.
     Requires SLACK_BOT_TOKEN (xoxb-...) with files:write + chat:write scopes.
     channel can be a channel name ('aria-ceo') or a raw ID ('C0B40FQ1K4K').
     initial_comment overrides the default "Daily Briefing — {date}" comment.
+    card_url: optional GitHub Pages URL for the interactive HTML card; appended
+              as a clickable link below the comment when provided.
     """
     cfg   = config.get("delivery", {}).get("slack", {})
     token = bot_token or os.getenv(cfg.get("bot_token_env_var", "SLACK_BOT_TOKEN"))
     ch    = channel   or os.getenv(cfg.get("channel_env_var",   "SLACK_CHANNEL_ID"), "#daily-briefing")
     ref   = getattr(narrative, "reference_date", "") or ""
     fname = f"briefing_{ref}.png"
+
+    # Build the comment; append interactive card link when available
+    if initial_comment is None:
+        initial_comment = f"*Daily Briefing — {ref}*"
+    if card_url:
+        initial_comment = f"{initial_comment}\n<{card_url}|🔗 Open Interactive Card>"
 
     if not token:
         log.warning("SLACK_BOT_TOKEN not set — Slack delivery skipped.")
@@ -370,7 +379,7 @@ def post_image_to_slack(png_bytes: bytes, narrative, config: dict,
         json={
             "files": [{"id": file_id, "title": narrative.headline}],
             "channel_id": ch,
-            "initial_comment": initial_comment or f"*Daily Briefing — {ref}*",
+            "initial_comment": initial_comment,
         },
         timeout=30,
     )
