@@ -4115,6 +4115,12 @@ def step_upload_data():
     # ── Target / Forecast / Plan data (optional) ─────────────────────────── #
     st.divider()
     st.subheader("🎯 Target / Forecast / Plan Data  *(optional)*")
+    st.info(
+        "📊 **Target & Plan overlay is coming in the next version.** "
+        "This feature is not available yet — you can upload a file but it won't appear on your card. "
+        "Achievement %, Gap to Target, and target trend lines are being redesigned for a cleaner look.",
+        icon=None,
+    )
     st.caption(
         "Upload your annual plan, forecast, or budget file. "
         "ARIA will automatically compute **Achievement %** and **Gap to Target** "
@@ -4130,6 +4136,7 @@ def step_upload_data():
             "Drop your target / plan file here (same format as your data file)",
             type=["xlsx", "xls", "csv"],
             key="target_file_uploader",
+            disabled=True,
         )
 
     with _tgt_col2:
