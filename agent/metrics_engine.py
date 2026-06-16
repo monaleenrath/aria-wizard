@@ -409,98 +409,310 @@ def compute_metrics(
 
 # ── Target achievement ───────────────────────────────────────────────────── #
 
+import re as _re
+import calendar as _calendar
+
+# Common prefixes/suffixes on target column names that should be stripped
+# when fuzzy-matching against actual KPI names
+_TARGET_PREFIXES = ["target_", "tgt_", "t_", "plan_", "forecast_", "fcst_",
+                    "budget_", "bdgt_", "goal_", "et_", "new_"]
+_TARGET_SUFFIXES = ["_target", "_tgt", "_plan", "_forecast", "_fcst",
+                    "_budget", "_bdgt", "_goal"]
+
+
+def _normalize_col(name: str) -> str:
+    """Lowercase + strip common target prefixes/suffixes + remove non-alphanumeric."""
+    s = name.lower().strip()
+    for p in _TARGET_PREFIXES:
+        if s.startswith(p):
+            s = s[len(p):]
+            break
+    for suf in _TARGET_SUFFIXES:
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+            break
+    return _re.sub(r"[^a-z0-9]", "", s)
+
+
+def _detect_target_schema(tdf: pd.DataFrame):
+    """
+    Auto-detect date column, dimension columns, and KPI columns in the
+    target DataFrame. Returns (date_col, granularity, dim_cols, kpi_cols).
+
+    granularity: "monthly" | "daily"
+    dim_cols:    list of string/categorical low-cardinality columns
+    kpi_cols:    list of numeric columns (potential target KPI values)
+    """
+    date_col    = None
+    granularity = "monthly"
+    kpi_cols    = []
+    dim_cols    = []
+
+    for col in tdf.columns:
+        sample = tdf[col].dropna()
+        if sample.empty:
+            continue
+
+        # ── Try to identify the date/period column ────────────────────────── #
+        if date_col is None:
+            # Try YYYY-MM string pattern first (most common in target files)
+            if tdf[col].dtype == object:
+                str_sample = sample.astype(str).head(5)
+                if all(_re.match(r"^\d{4}-\d{2}$", str(v).strip()[:7]) for v in str_sample):
+                    date_col    = col
+                    granularity = "monthly"
+                    continue
+            # Try parsing as datetime
+            try:
+                parsed = pd.to_datetime(sample.head(20), errors="raise")
+                date_col = col
+                # If all values have day=1 or dtype is period-like → monthly
+                unique_days = parsed.dt.day.nunique()
+                granularity = "daily" if unique_days > 3 else "monthly"
+                continue
+            except Exception:
+                pass
+
+        # ── Numeric → candidate KPI column ───────────────────────────────── #
+        if pd.api.types.is_numeric_dtype(tdf[col]):
+            kpi_cols.append(col)
+            continue
+
+        # ── String/categorical low-cardinality → dimension column ─────────── #
+        n_unique = tdf[col].nunique()
+        if tdf[col].dtype == object and 1 < n_unique <= 60:
+            dim_cols.append(col)
+
+    return date_col, granularity, dim_cols, kpi_cols
+
+
+def _fuzzy_match_kpi_cols(
+    target_kpi_cols: List[str],
+    kpi_names: List[str],
+) -> Dict[str, str]:
+    """
+    Returns {kpi_name: target_col} for every KPI name that has a
+    confident fuzzy match in the target columns.
+    """
+    norm_to_tcol: Dict[str, str] = {}
+    for col in target_kpi_cols:
+        n = _normalize_col(col)
+        if n:
+            norm_to_tcol[n] = col
+
+    result: Dict[str, str] = {}
+    for kpi_name in kpi_names:
+        n = _normalize_col(kpi_name)
+        if n and n in norm_to_tcol:
+            result[kpi_name] = norm_to_tcol[n]
+    return result
+
+
+def _target_months_for_timeframe(reference_date: date, timeframe: str) -> List[str]:
+    """Return list of YYYY-MM strings covering the reporting period."""
+    ref_ym  = f"{reference_date.year}-{reference_date.month:02d}"
+    q_start = date(reference_date.year,
+                   ((reference_date.month - 1) // 3) * 3 + 1, 1)
+
+    if timeframe in ("mtd", "wtd", "1d"):
+        return [ref_ym]
+    if timeframe == "qtd":
+        months = []
+        for i in range(3):
+            m = q_start.month + i
+            if m > 12:
+                break
+            d = date(q_start.year, m, 1)
+            if d <= reference_date:
+                months.append(f"{d.year}-{d.month:02d}")
+        return months
+    if timeframe == "ytd":
+        return [f"{reference_date.year}-{m:02d}"
+                for m in range(1, reference_date.month + 1)]
+    return [ref_ym]
+
+
+def compute_rich_targets(
+    target_path: str,
+    kpi_cfgs: list,
+    reference_date: date,
+    timeframe: str,
+) -> dict:
+    """
+    Load the target Excel, auto-detect schema, fuzzy-match KPI columns, and
+    return a rich structure used by the HTML templates and narrative generator.
+
+    Returns a dict with keys:
+      available              – bool: False if file unreadable or no KPI matched
+      granularity            – "monthly" | "daily"
+      dim_cols               – list of dimension column names found in target file
+      kpi_col_map            – {kpi_name: target_col_name}  (fuzzy-matched)
+      totals                 – {kpi_name: {target, target_fmt, achievement_pct}}
+      monthly_series         – {kpi_name: {labels:[...], values:[...]}}
+      dim_member_totals      – {dim: {member: {kpi_name: target_value, ...}}}
+      dim_member_monthly     – {dim: {member: {kpi_name: {labels, values}}}}
+    """
+    _empty = {"available": False, "granularity": "monthly",
+              "dim_cols": [], "kpi_col_map": {}, "totals": {},
+              "monthly_series": {}, "dim_member_totals": {},
+              "dim_member_monthly": {}}
+
+    # ── Load file ─────────────────────────────────────────────────────────── #
+    try:
+        tdf = pd.read_excel(target_path, engine="openpyxl")
+    except Exception as exc:
+        log.warning("Target file not readable (%s): %s", target_path, exc)
+        return _empty
+
+    if tdf.empty:
+        return _empty
+
+    # ── Auto-detect schema ────────────────────────────────────────────────── #
+    date_col, granularity, dim_cols, raw_kpi_cols = _detect_target_schema(tdf)
+    if not date_col:
+        log.warning("Target file: no date column detected — skipping.")
+        return _empty
+
+    # Normalise date column to YYYY-MM strings
+    tdf["_ym"] = (
+        pd.to_datetime(tdf[date_col].astype(str).str[:10], errors="coerce")
+        .dt.to_period("M")
+        .astype(str)
+    )
+    tdf = tdf.dropna(subset=["_ym"])
+
+    # ── Fuzzy-match target cols → KPI names ──────────────────────────────── #
+    kpi_names  = [k.get("name", "") for k in kpi_cfgs if k.get("name")]
+    kpi_fmts   = {k.get("name", ""): k.get("format", "number") for k in kpi_cfgs}
+    kpi_aggs   = {k.get("name", ""): k.get("agg", "sum") for k in kpi_cfgs}
+    kpi_col_map = _fuzzy_match_kpi_cols(raw_kpi_cols, kpi_names)
+
+    if not kpi_col_map:
+        log.warning("Target file: no KPI columns matched — skipping.")
+        return _empty
+
+    log.info("Target KPI column map: %s", kpi_col_map)
+
+    # ── Determine period months ───────────────────────────────────────────── #
+    period_months = _target_months_for_timeframe(reference_date, timeframe)
+    period_df     = tdf[tdf["_ym"].isin(period_months)]
+
+    # All months present in the file (for sparkline series)
+    all_months_sorted = sorted(tdf["_ym"].dropna().unique().tolist())
+
+    # Pro-rate scalar for 1d timeframe
+    days_in_month = _calendar.monthrange(reference_date.year, reference_date.month)[1]
+    prorate       = reference_date.day / days_in_month if timeframe == "1d" else 1.0
+
+    # ── Helper: aggregate a target column for a slice ────────────────────── #
+    def _agg_target(df_slice: pd.DataFrame, tcol: str, agg: str) -> float:
+        if df_slice.empty or tcol not in df_slice.columns:
+            return 0.0
+        vals = df_slice[tcol].dropna()
+        if vals.empty:
+            return 0.0
+        if agg == "mean":
+            return float(vals.mean())
+        return float(vals.sum())
+
+    # ── TOTALS — overall target per KPI for the period ────────────────────── #
+    totals: Dict[str, dict] = {}
+    for kpi_name, tcol in kpi_col_map.items():
+        agg  = kpi_aggs.get(kpi_name, "sum")
+        fmt  = kpi_fmts.get(kpi_name, "number")
+        tval = _agg_target(period_df, tcol, agg) * (prorate if agg != "mean" else 1.0)
+        if tval == 0:
+            continue
+        totals[kpi_name] = {
+            "target":          round(tval, 2),
+            "target_fmt":      _fmt(tval, fmt),
+            "achievement_pct": 100.0,   # filled later by fill_achievement()
+        }
+
+    # ── MONTHLY SERIES — 12-month target sparkline per KPI (overall) ─────── #
+    monthly_series: Dict[str, dict] = {}
+    for kpi_name, tcol in kpi_col_map.items():
+        agg = kpi_aggs.get(kpi_name, "sum")
+        rows = []
+        for ym in all_months_sorted[-12:]:
+            slice_df = tdf[tdf["_ym"] == ym]
+            rows.append((_agg_target(slice_df, tcol, agg), ym))
+        if any(v > 0 for v, _ in rows):
+            monthly_series[kpi_name] = {
+                "labels": [ym for _, ym in rows],
+                "values": [round(v, 2) for v, _ in rows],
+            }
+
+    # ── DIM MEMBER TOTALS — per dimension × member × KPI ────────────────── #
+    dim_member_totals: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for dim in dim_cols:
+        if dim not in period_df.columns:
+            continue
+        dim_member_totals[dim] = {}
+        members = sorted(period_df[dim].dropna().unique().tolist(), key=str)
+        for mem in members:
+            mem_df = period_df[period_df[dim] == mem]
+            kpi_vals: Dict[str, float] = {}
+            for kpi_name, tcol in kpi_col_map.items():
+                agg  = kpi_aggs.get(kpi_name, "sum")
+                tval = _agg_target(mem_df, tcol, agg) * (prorate if agg != "mean" else 1.0)
+                if tval > 0:
+                    kpi_vals[kpi_name] = round(tval, 2)
+            if kpi_vals:
+                dim_member_totals[dim][str(mem)] = kpi_vals
+
+    # ── DIM MEMBER MONTHLY SERIES — per dim × member × KPI × month ───────── #
+    dim_member_monthly: Dict[str, Dict[str, Dict[str, dict]]] = {}
+    for dim in dim_cols:
+        if dim not in tdf.columns:
+            continue
+        dim_member_monthly[dim] = {}
+        members = sorted(tdf[dim].dropna().unique().tolist(), key=str)
+        for mem in members:
+            mem_all = tdf[tdf[dim] == mem]
+            kpi_series: Dict[str, dict] = {}
+            for kpi_name, tcol in kpi_col_map.items():
+                agg    = kpi_aggs.get(kpi_name, "sum")
+                labels, values = [], []
+                for ym in all_months_sorted[-12:]:
+                    slice_df = mem_all[mem_all["_ym"] == ym]
+                    v = _agg_target(slice_df, tcol, agg)
+                    labels.append(ym)
+                    values.append(round(v, 2))
+                if any(v > 0 for v in values):
+                    kpi_series[kpi_name] = {"labels": labels, "values": values}
+            if kpi_series:
+                dim_member_monthly[dim][str(mem)] = kpi_series
+
+    return {
+        "available":           bool(totals),
+        "granularity":         granularity,
+        "dim_cols":            dim_cols,
+        "kpi_col_map":         kpi_col_map,
+        "totals":              totals,
+        "monthly_series":      monthly_series,
+        "dim_member_totals":   dim_member_totals,
+        "dim_member_monthly":  dim_member_monthly,
+    }
+
+
+# ── Backward-compat shim ─────────────────────────────────────────────────── #
+
 def compute_target_achievement(
     target_path: str,
     kpi_cfgs: list,
     reference_date: date,
     timeframe: str,
 ) -> Dict[str, dict]:
-    """
-    Load the target Excel file and compute achievement % for each KPI.
-
-    Target files must have a 'Month' column (YYYY-MM string) and columns
-    named 'Target_{column_name}' matching each KPI's `column` field.
-
-    Returns:
-        {kpi_name: {"target": float, "target_fmt": str, "achievement_pct": float}}
-        Only KPIs with a matching Target_ column are included.
-    """
-    try:
-        tdf = pd.read_excel(target_path, engine="openpyxl")
-    except Exception as exc:
-        log.warning("Target file not readable (%s): %s", target_path, exc)
-        return {}
-
-    if "Month" not in tdf.columns:
-        log.warning("Target file has no 'Month' column — skipping achievement.")
-        return {}
-
-    # Determine which months to include based on timeframe
-    ref_ym  = f"{reference_date.year}-{reference_date.month:02d}"
-    q_start = date(reference_date.year, ((reference_date.month - 1) // 3) * 3 + 1, 1)
-
-    if timeframe in ("mtd", "wtd", "1d"):
-        months = [ref_ym]
-    elif timeframe == "qtd":
-        months = [
-            f"{date(q_start.year, q_start.month + i, 1).year}-"
-            f"{date(q_start.year, q_start.month + i, 1).month:02d}"
-            for i in range(3)
-            if q_start.month + i <= 12 and
-               date(q_start.year, q_start.month + i, 1) <= reference_date
-        ]
-    elif timeframe == "ytd":
-        months = [f"{reference_date.year}-{m:02d}" for m in range(1, reference_date.month + 1)]
-    else:
-        months = [ref_ym]
-
-    tdf["Month"] = tdf["Month"].astype(str).str[:7]
-    period_df = tdf[tdf["Month"].isin(months)]
-    if period_df.empty:
-        log.warning("No target rows found for months %s in %s", months, target_path)
-        return {}
-
-    # Days-in-month pro-rate for 1d timeframe
-    import calendar
-    days_in_month = calendar.monthrange(reference_date.year, reference_date.month)[1]
-    elapsed_days  = reference_date.day
-    prorate       = elapsed_days / days_in_month if timeframe == "1d" else 1.0
-
-    results: Dict[str, dict] = {}
-    for kpi_cfg in kpi_cfgs:
-        name    = kpi_cfg.get("name", "")
-        col     = kpi_cfg.get("column", "")
-        agg     = kpi_cfg.get("agg", "sum")
-        fmt     = kpi_cfg.get("format", "currency")
-        if not col:
-            continue  # skip ratio KPIs — no direct column
-
-        t_col = f"Target_{col}"
-        if t_col not in period_df.columns:
-            continue
-
-        # Aggregate target for period
-        if agg == "mean":
-            t_val = float(period_df[t_col].mean())
-        else:
-            t_val = float(period_df[t_col].sum()) * prorate
-
-        if t_val == 0:
-            continue
-
-        results[name] = {
-            "target":          round(t_val, 2),
-            "target_fmt":      _fmt(t_val, fmt),
-            "achievement_pct": round(100.0, 1),  # placeholder — filled below
-        }
-
-    return results
+    """Legacy wrapper — returns totals dict only. Use compute_rich_targets() instead."""
+    rich = compute_rich_targets(target_path, kpi_cfgs, reference_date, timeframe)
+    return rich.get("totals", {})
 
 
 def fill_achievement(targets: Dict[str, dict], kpis: Dict[str, "KPI"]) -> Dict[str, dict]:
     """Cross-reference targets with actuals and compute achievement %."""
     for name, t in targets.items():
-        if name in kpis and t["target"] != 0:
+        if name in kpis and t.get("target", 0) != 0:
             actual = kpis[name].value
             t["achievement_pct"] = round((actual / t["target"]) * 100, 1)
     return targets
