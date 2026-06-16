@@ -122,7 +122,8 @@ def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
 
     _log.error("Failed to publish card (HTTP %s): %s", code, result.get("message", ""))
     return ""
-from agent.metrics_engine import compute_metrics, compute_target_achievement, fill_achievement
+from agent.metrics_engine import (compute_metrics, compute_target_achievement,
+                                   compute_rich_targets, fill_achievement)
 try:
     from agent.driver_analysis import analyze_drivers, drivers_to_dict, DRIVER_ANALYSIS_VERSION
 except ImportError:
@@ -201,17 +202,27 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
     # 2b — TARGET ACHIEVEMENT ------------------------------------------------ #
     _target_path = config["data"].get("target_excel_path", "")
     _targets: dict = {}
+    _target_data: dict = {"available": False}
     if _target_path:
         import datetime as _dt2
         _ref = _dt2.date.fromisoformat(snapshot.reference_date)
         _kpi_cfgs = config.get("metrics", {}).get("kpis", [])
         _timeframe = config.get("metrics", {}).get("default_timeframe",
                      config.get("metrics", {}).get("timeframe", "mtd"))
-        _targets_raw = compute_target_achievement(
+        # Rich targets (new) — used by HTML templates for visual overlays
+        _target_data = compute_rich_targets(
             _target_path, _kpi_cfgs, _ref, _timeframe
         )
-        _targets = fill_achievement(_targets_raw, snapshot.kpis)
-        log.info("Targets loaded: %d KPIs matched", len(_targets))
+        # Fill achievement % against actual KPI values
+        _targets = fill_achievement(
+            dict(_target_data.get("totals", {})), snapshot.kpis
+        )
+        # Sync filled achievement back into target_data.totals
+        _target_data["totals"] = _targets
+        log.info("Targets loaded: %d KPIs matched | dims=%s | granularity=%s",
+                 len(_targets),
+                 _target_data.get("dim_cols", []),
+                 _target_data.get("granularity", "?"))
 
     # 3 — DRIVERS ---------------------------------------------------------- #
     import datetime as _dt
@@ -493,7 +504,8 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
 
     payload = {
         **snapshot.to_dict(),
-        "targets": _targets,
+        "targets":     _targets,
+        "target_data": _target_data,
         "drivers": drivers_to_dict(drivers_yoy),
         "drivers_dod": drivers_to_dict(drivers_dod),
         "daily_sales_30d":     daily_sales_30d,
