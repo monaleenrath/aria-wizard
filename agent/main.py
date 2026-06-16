@@ -35,42 +35,33 @@ from agent.data_loader import load_data
 
 def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
     """
-    Push the HTML card to the public aria-cards repo (gh-pages branch)
-    using the GitHub Contents API. Returns the card URL on success, "" on skip/fail.
+    Push the HTML card to a public GitHub Pages repo via the Contents API.
+    Returns the card URL on success, "" on skip/fail.
 
-    Requires two env vars (set automatically in GitHub Actions):
-      ARIA_CARDS_PAT          — PAT with repo scope on aria-cards
-      GITHUB_REPOSITORY_OWNER — set automatically by GitHub Actions
+    Publish strategy (tried in order):
+      1. ARIA_CARDS_PAT  + aria-cards repo  → https://{owner}.github.io/aria-cards/...
+      2. GITHUB_TOKEN    + current repo     → https://{owner}.github.io/aria-daily-briefing/...
+
+    Path 1 requires ARIA_CARDS_PAT to have full 'repo' scope on the aria-cards
+    repository.  Path 2 uses the built-in GITHUB_TOKEN (always available in Actions)
+    and the 'contents: write' permission already granted to this workflow.
     """
     _log = logging.getLogger("agent.main")
-    # Prefer a dedicated PAT; fall back to GITHUB_TOKEN (available in Actions by default)
-    token      = os.getenv("ARIA_CARDS_PAT") or os.getenv("GITHUB_TOKEN", "")
-    cards_repo = os.getenv("ARIA_CARDS_REPO", "aria-cards")
-    branch     = "gh-pages"
 
-    # Derive owner from GITHUB_REPOSITORY_OWNER or GITHUB_REPOSITORY (Actions built-in)
+    # Derive owner — set automatically by GitHub Actions
     owner = os.getenv("GITHUB_REPOSITORY_OWNER", "")
     if not owner:
-        gh_repo = os.getenv("GITHUB_REPOSITORY", "")  # "owner/repo"
+        gh_repo = os.getenv("GITHUB_REPOSITORY", "")
         owner = gh_repo.split("/")[0] if "/" in gh_repo else ""
-
-    # When using GITHUB_TOKEN the cards must live in the same repo — override if default
-    if not os.getenv("ARIA_CARDS_PAT") and os.getenv("GITHUB_TOKEN") and cards_repo == "aria-cards":
-        cards_repo = os.getenv("ARIA_CARDS_REPO",
-                               os.getenv("GITHUB_REPOSITORY", "").split("/")[-1] or "aria-cards")
-
-    if not token or not owner:
-        _log.info("No GitHub token / owner available — skipping Pages publish.")
+    if not owner:
+        _log.info("No GITHUB_REPOSITORY_OWNER — skipping Pages publish.")
         return ""
 
-    card_url = f"https://{owner}.github.io/{cards_repo}/cards/{ref_date}/{role}.html"
-    rel_path = f"cards/{ref_date}/{role}.html"
-
-    def _api(method: str, path: str, data: Optional[dict] = None):
+    def _api(tok: str, method: str, path: str, data: Optional[dict] = None):
         url  = f"https://api.github.com{path}"
         body = json.dumps(data).encode() if data else None
         req  = urllib.request.Request(url, data=body, method=method, headers={
-            "Authorization": f"token {token}",
+            "Authorization": f"token {tok}",
             "Accept":        "application/vnd.github.v3+json",
             "Content-Type":  "application/json",
         })
@@ -82,46 +73,115 @@ def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
             raw = e.read() or b"{}"
             return (json.loads(raw) if raw.strip() else {}), e.code
 
-    # ── Step 1: ensure gh-pages branch exists ──────────────────────────────── #
-    _, branch_status = _api("GET", f"/repos/{owner}/{cards_repo}/branches/{branch}")
-    if branch_status == 404:
-        _log.info("gh-pages branch not found — creating from main...")
-        main_ref, s = _api("GET", f"/repos/{owner}/{cards_repo}/git/refs/heads/main")
-        if s != 200:
-            _log.error("Could not get main branch SHA (HTTP %s) — aborting.", s)
+    def _push(tok: str, repo: str) -> str:
+        """Upsert cards/{ref_date}/{role}.html on the gh-pages branch of {owner}/{repo}.
+        Returns the public URL on success, "" on failure."""
+        branch   = "gh-pages"
+        pub_url  = f"https://{owner}.github.io/{repo}/cards/{ref_date}/{role}.html"
+        rel_path = f"cards/{ref_date}/{role}.html"
+
+        # ── Ensure gh-pages branch exists ──────────────────────────────────── #
+        _, bstatus = _api(tok, "GET", f"/repos/{owner}/{repo}/branches/{branch}")
+        if bstatus == 404:
+            _log.info("[%s] gh-pages not found — creating from main...", repo)
+            main_ref, s = _api(tok, "GET", f"/repos/{owner}/{repo}/git/refs/heads/main")
+            if s != 200:
+                _log.error("[%s] Could not get main SHA (HTTP %s) — aborting.", repo, s)
+                return ""
+            _, s = _api(tok, "POST", f"/repos/{owner}/{repo}/git/refs",
+                        {"ref": "refs/heads/gh-pages",
+                         "sha": main_ref["object"]["sha"]})
+            if s not in (200, 201):
+                _log.error("[%s] Failed to create gh-pages (HTTP %s).", repo, s)
+                return ""
+            _api(tok, "PUT", f"/repos/{owner}/{repo}/pages",
+                 {"source": {"branch": "gh-pages", "path": "/"}})
+            _log.info("[%s] gh-pages branch created.", repo)
+        elif bstatus not in (200,):
+            _log.error("[%s] Unexpected HTTP %s checking gh-pages branch.", repo, bstatus)
             return ""
-        main_sha = main_ref["object"]["sha"]
-        _, s = _api("POST", f"/repos/{owner}/{cards_repo}/git/refs",
-                    {"ref": "refs/heads/gh-pages", "sha": main_sha})
-        if s not in (200, 201):
-            _log.error("Failed to create gh-pages branch (HTTP %s).", s)
-            return ""
-        _log.info("gh-pages branch created.")
 
-        # ── Also configure GitHub Pages to serve from gh-pages/root ─────── #
-        _api("PUT", f"/repos/{owner}/{cards_repo}/pages",
-             {"source": {"branch": "gh-pages", "path": "/"}})
+        # ── Check for existing file SHA (required for updates) ─────────────── #
+        existing, _ = _api(tok, "GET",
+                           f"/repos/{owner}/{repo}/contents/{rel_path}?ref={branch}")
+        sha = existing.get("sha")
 
-    # ── Step 2: check for existing file SHA (needed for API updates) ───────── #
-    existing, status = _api("GET", f"/repos/{owner}/{cards_repo}/contents/{rel_path}?ref={branch}")
-    sha = existing.get("sha") if status == 200 else None
+        # ── Upsert the card file ───────────────────────────────────────────── #
+        payload: dict = {
+            "message": f"chore: publish {role} card for {ref_date} [skip ci]",
+            "content": base64.b64encode(html_string.encode()).decode(),
+            "branch":  branch,
+        }
+        if sha:
+            payload["sha"] = sha
 
-    # ── Step 3: upsert the card file ───────────────────────────────────────── #
-    payload: dict = {
-        "message": f"chore: publish {role} card for {ref_date} [skip ci]",
-        "content": base64.b64encode(html_string.encode()).decode(),
-        "branch":  branch,
-    }
-    if sha:
-        payload["sha"] = sha
+        result, code = _api(tok, "PUT",
+                            f"/repos/{owner}/{repo}/contents/{rel_path}", payload)
+        if code in (200, 201):
+            _log.info("[%s] Card published → %s", repo, pub_url)
+            return pub_url
 
-    result, code = _api("PUT", f"/repos/{owner}/{cards_repo}/contents/{rel_path}", payload)
-    if code in (200, 201):
-        _log.info("Card published → %s", card_url)
-        return card_url
+        _log.error("[%s] PUT failed HTTP %s: %s", repo, code, result.get("message", result))
+        return ""
 
-    _log.error("Failed to publish card (HTTP %s): %s", code, result.get("message", ""))
+    # ── Path 1: ARIA_CARDS_PAT + aria-cards ───────────────────────────────── #
+    aria_pat   = os.getenv("ARIA_CARDS_PAT", "")
+    cards_repo = os.getenv("ARIA_CARDS_REPO", "aria-cards")
+    if aria_pat:
+        url = _push(aria_pat, cards_repo)
+        if url:
+            return url
+        _log.warning(
+            "ARIA_CARDS_PAT publish to '%s' failed — check that the PAT has full "
+            "'repo' scope (not just 'public_repo') and is saved in repo secrets. "
+            "Trying GITHUB_TOKEN fallback...", cards_repo
+        )
+
+    # ── Path 2: GITHUB_TOKEN + current repo (always available in Actions) ─── #
+    github_token = os.getenv("GITHUB_TOKEN", "")
+    if github_token:
+        current_repo = (os.getenv("GITHUB_REPOSITORY", "").split("/")[-1]
+                        or "aria-daily-briefing")
+        url = _push(github_token, current_repo)
+        if url:
+            return url
+        _log.error("GITHUB_TOKEN fallback publish to '%s' also failed.", current_repo)
+
+    if not aria_pat and not github_token:
+        _log.info("No GitHub token available — skipping Pages publish.")
     return ""
+
+
+def _wait_for_pages(url: str, max_wait: int = 180, interval: int = 10) -> bool:
+    """
+    Poll url with HEAD requests until it returns HTTP 200 or max_wait seconds elapse.
+    GitHub Pages typically propagates a new/updated file within 30–90 seconds.
+    Returns True if the card became available within the timeout, False otherwise.
+    """
+    _log = logging.getLogger("agent.main")
+    _log.info("Waiting for GitHub Pages to serve card (up to %ds)…", max_wait)
+    deadline = time.time() + max_wait
+    attempt  = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=8) as r:
+                if r.status == 200:
+                    _log.info("Card is live after ~%ds (attempt %d): %s",
+                              int(time.time() - (deadline - max_wait)), attempt, url)
+                    return True
+        except Exception:
+            pass
+        remaining = int(deadline - time.time())
+        if remaining > 0:
+            _log.info("  … not ready yet (attempt %d, %ds remaining)", attempt, remaining)
+            time.sleep(interval)
+    _log.warning("Card URL not reachable after %ds — posting to Slack anyway. "
+                 "The link should become active within 1–2 more minutes.", max_wait)
+    return False
+
+
 from agent.metrics_engine import (compute_metrics, compute_target_achievement,
                                    compute_rich_targets, fill_achievement)
 try:
@@ -578,8 +638,38 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
             fh.write(html_string)
         log.info("HTML card written: %s", html_path)
 
-        # Publish the HTML card to aria-cards/gh-pages and get the live URL.
+        # ── Publish card + resolve live URL ───────────────────────────────────── #
+        # publish_card_to_github() tries ARIA_CARDS_PAT + aria-cards first, then
+        # falls back automatically to GITHUB_TOKEN + aria-daily-briefing.
+        # It returns the actual URL of whichever path succeeded.
         card_url = publish_card_to_github(html_string, snapshot.reference_date, safe_role)
+
+        # If both publish paths failed, pre-compute the expected aria-cards URL anyway
+        # so the Slack link is still present (the separate workflow publish step may
+        # succeed where this inline call failed).
+        if not card_url:
+            _gh_owner = (
+                os.getenv("GITHUB_REPOSITORY_OWNER")
+                or os.getenv("GITHUB_REPOSITORY", "").split("/")[0]
+            )
+            _gh_cards_repo = os.getenv("ARIA_CARDS_REPO", "aria-cards")
+            card_url = (
+                f"https://{_gh_owner}.github.io/{_gh_cards_repo}"
+                f"/cards/{snapshot.reference_date}/{safe_role}.html"
+                if _gh_owner else ""
+            )
+            if card_url:
+                log.warning(
+                    "Both publish paths failed — Slack link will include the expected URL "
+                    "but the card may be 404 until the separate workflow publish step runs. "
+                    "Check agent.log for the specific API error."
+                )
+
+        # ── Wait for GitHub Pages CDN to serve the card ───────────────────────── #
+        # GitHub Pages takes 30–120 s to propagate a newly pushed file.
+        # We poll here so the Slack link is always clickable when the message arrives.
+        if card_url:
+            _wait_for_pages(card_url, max_wait=180, interval=10)
 
         png_bytes: Optional[bytes] = None
         png_path:  Optional[str]   = None
