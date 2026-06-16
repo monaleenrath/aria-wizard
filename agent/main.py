@@ -11,11 +11,14 @@ Orchestrator. Runs the full daily briefing pipeline:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
 import sys
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +29,88 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent.data_loader import load_data
+
+
+# ── GitHub Pages card publisher ──────────────────────────────────────────── #
+
+def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
+    """
+    Push the HTML card to the public aria-cards repo (gh-pages branch)
+    using the GitHub Contents API. Returns the card URL on success, "" on skip/fail.
+
+    Requires two env vars (set automatically in GitHub Actions):
+      ARIA_CARDS_PAT          — PAT with repo scope on aria-cards
+      GITHUB_REPOSITORY_OWNER — set automatically by GitHub Actions
+    """
+    _log = logging.getLogger("agent.main")
+    token      = os.getenv("ARIA_CARDS_PAT", "")
+    owner      = os.getenv("GITHUB_REPOSITORY_OWNER", "")
+    cards_repo = os.getenv("ARIA_CARDS_REPO", "aria-cards")
+    branch     = "gh-pages"
+
+    if not token or not owner:
+        _log.info("ARIA_CARDS_PAT / GITHUB_REPOSITORY_OWNER not set — skipping Pages publish.")
+        return ""
+
+    card_url = f"https://{owner}.github.io/{cards_repo}/cards/{ref_date}/{role}.html"
+    rel_path = f"cards/{ref_date}/{role}.html"
+
+    def _api(method: str, path: str, data: Optional[dict] = None):
+        url  = f"https://api.github.com{path}"
+        body = json.dumps(data).encode() if data else None
+        req  = urllib.request.Request(url, data=body, method=method, headers={
+            "Authorization": f"token {token}",
+            "Accept":        "application/vnd.github.v3+json",
+            "Content-Type":  "application/json",
+        })
+        try:
+            with urllib.request.urlopen(req) as r:
+                raw = r.read()
+                return (json.loads(raw) if raw else {}), r.status
+        except urllib.error.HTTPError as e:
+            raw = e.read() or b"{}"
+            return (json.loads(raw) if raw.strip() else {}), e.code
+
+    # ── Step 1: ensure gh-pages branch exists ──────────────────────────────── #
+    _, branch_status = _api("GET", f"/repos/{owner}/{cards_repo}/branches/{branch}")
+    if branch_status == 404:
+        _log.info("gh-pages branch not found — creating from main...")
+        main_ref, s = _api("GET", f"/repos/{owner}/{cards_repo}/git/refs/heads/main")
+        if s != 200:
+            _log.error("Could not get main branch SHA (HTTP %s) — aborting.", s)
+            return ""
+        main_sha = main_ref["object"]["sha"]
+        _, s = _api("POST", f"/repos/{owner}/{cards_repo}/git/refs",
+                    {"ref": "refs/heads/gh-pages", "sha": main_sha})
+        if s not in (200, 201):
+            _log.error("Failed to create gh-pages branch (HTTP %s).", s)
+            return ""
+        _log.info("gh-pages branch created.")
+
+        # ── Also configure GitHub Pages to serve from gh-pages/root ─────── #
+        _api("PUT", f"/repos/{owner}/{cards_repo}/pages",
+             {"source": {"branch": "gh-pages", "path": "/"}})
+
+    # ── Step 2: check for existing file SHA (needed for API updates) ───────── #
+    existing, status = _api("GET", f"/repos/{owner}/{cards_repo}/contents/{rel_path}?ref={branch}")
+    sha = existing.get("sha") if status == 200 else None
+
+    # ── Step 3: upsert the card file ───────────────────────────────────────── #
+    payload: dict = {
+        "message": f"chore: publish {role} card for {ref_date} [skip ci]",
+        "content": base64.b64encode(html_string.encode()).decode(),
+        "branch":  branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    result, code = _api("PUT", f"/repos/{owner}/{cards_repo}/contents/{rel_path}", payload)
+    if code in (200, 201):
+        _log.info("Card published → %s", card_url)
+        return card_url
+
+    _log.error("Failed to publish card (HTTP %s): %s", code, result.get("message", ""))
+    return ""
 from agent.metrics_engine import compute_metrics
 try:
     from agent.driver_analysis import analyze_drivers, drivers_to_dict, DRIVER_ANALYSIS_VERSION
@@ -38,6 +123,7 @@ from agent.report_writer import write_markdown, write_docx
 from agent.slack_publisher import post_image_to_slack, post_to_slack, render_slack_preview
 from agent.html_generator import generate_html_card, html_to_png
 from agent.teams_publisher import post_to_teams
+from agent.email_publisher import post_email
 
 
 def setup_logging():
@@ -453,6 +539,9 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
             fh.write(html_string)
         log.info("HTML card written: %s", html_path)
 
+        # Publish the HTML card to aria-cards/gh-pages and get the live URL.
+        card_url = publish_card_to_github(html_string, snapshot.reference_date, safe_role)
+
         png_bytes: Optional[bytes] = None
         png_path:  Optional[str]   = None
         try:
@@ -502,6 +591,7 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
                         png_bytes, narrative, config,
                         channel=role_channel,
                         initial_comment=comment,
+                        card_url=card_url or None,
                     )
                 else:
                     log.error("PNG not available for %s — Slack skipped.", role_name)
@@ -509,7 +599,16 @@ def run(config_path: str = "config.yaml", dry_run: bool = False,
                         "status": "skipped", "reason": "PNG generation failed"
                     }
             if "teams" in channels:
-                role_delivery["teams"] = post_to_teams(narrative, config)
+                role_delivery["teams"] = post_to_teams(
+                    narrative, config, card_url=card_url or None
+                )
+            if "email" in channels:
+                role_email = (role_cfg or {}).get("email", "")
+                role_delivery["email"] = post_email(
+                    narrative, config,
+                    recipient=role_email or None,
+                    card_url=card_url or "",
+                )
 
         log.info("Delivery results for %s: %s", role_name, role_delivery)
 
