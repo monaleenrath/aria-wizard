@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import logging
 import os
@@ -57,7 +58,8 @@ def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
         _log.info("No GITHUB_REPOSITORY_OWNER — skipping Pages publish.")
         return ""
 
-    def _api(tok: str, method: str, path: str, data: Optional[dict] = None):
+    def _api(tok: str, method: str, path: str, data: Optional[dict] = None,
+             _retries: int = 3, _backoff: float = 5.0):
         url  = f"https://api.github.com{path}"
         body = json.dumps(data).encode() if data else None
         req  = urllib.request.Request(url, data=body, method=method, headers={
@@ -65,13 +67,28 @@ def publish_card_to_github(html_string: str, ref_date: str, role: str) -> str:
             "Accept":        "application/vnd.github.v3+json",
             "Content-Type":  "application/json",
         })
-        try:
-            with urllib.request.urlopen(req) as r:
-                raw = r.read()
-                return (json.loads(raw) if raw else {}), r.status
-        except urllib.error.HTTPError as e:
-            raw = e.read() or b"{}"
-            return (json.loads(raw) if raw.strip() else {}), e.code
+        last_exc: Exception = RuntimeError("No attempts made")
+        for attempt in range(1, _retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    raw = r.read()
+                    return (json.loads(raw) if raw else {}), r.status
+            except urllib.error.HTTPError as e:
+                raw = e.read() or b"{}"
+                return (json.loads(raw) if raw.strip() else {}), e.code
+            except (http.client.RemoteDisconnected,
+                    ConnectionResetError,
+                    OSError) as exc:
+                last_exc = exc
+                if attempt < _retries:
+                    wait = _backoff * attempt
+                    _log.warning(
+                        "GitHub API connection dropped (attempt %d/%d, %s) — "
+                        "retrying in %.0fs…", attempt, _retries, exc, wait
+                    )
+                    time.sleep(wait)
+        _log.error("GitHub API call failed after %d attempts: %s", _retries, last_exc)
+        raise last_exc
 
     def _push(tok: str, repo: str) -> str:
         """Upsert cards/{ref_date}/{role}.html on the gh-pages branch of {owner}/{repo}.
