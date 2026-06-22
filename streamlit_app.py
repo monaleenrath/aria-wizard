@@ -4108,7 +4108,9 @@ def step_upload_data():
         if st.button("Load from Sheets") and url:
             with st.spinner("Fetching sheet…"):
                 try:
-                    csv_url = url.split("/edit")[0] + "/export?format=csv&gid=0"
+                    _gid_m = re.search(r'[#?&]gid=(\d+)', url)
+                    _gid   = _gid_m.group(1) if _gid_m else "0"
+                    csv_url = url.split("/edit")[0] + f"/export?format=csv&gid={_gid}"
                     df = pd.read_csv(csv_url)
                     st.session_state.df               = df
                     st.session_state.data_source      = "google_sheets"
